@@ -1,8 +1,11 @@
 name: CI
 
-# 跨平台编译 + 平台适配层运行时测试。
-# 关键价值：在 windows-latest 上真实运行 CredentialStore / SingleInstance 的 Win32 FFI，
-# 弥补本机（macOS）无法执行 Windows 适配器的缺口。
+# 跨平台编译 + 平台适配层运行时测试 + stacio_core 集成测试。
+# 关键价值：
+#   - windows-latest 上真实运行 CredentialStore / SingleInstance 的 Win32 FFI
+#   - 三端原生编译 stacio_core（Linux 直接 crate 依赖；Windows UI 同为 Rust 直接依赖）
+#   - core-bridge 集成测试在真实 SQLite 上跑迁移 + 会话 CRUD（三端）
+# stacio_core 为 vendor/ 快照（见 scripts/sync-core.sh），无需外部 checkout。
 
 on:
   push:
@@ -28,6 +31,9 @@ jobs:
       #   macOS/Linux → flock 单实例
       - name: Build & test platform crate
         run: cargo test -p stacio-platform
-      # 整个 workspace 编译检查（含 wgpu/egui 重依赖）。
+      # stacio_core 集成测试：真实 SQLite 迁移 + 会话 CRUD + 侧栏快照。
+      - name: Build & test core bridge
+        run: cargo test -p stacio-core-bridge
+      # 整个 workspace 编译检查（含 wgpu/egui/stacio_core 重依赖）。
       - name: Workspace check
         run: cargo check --workspace

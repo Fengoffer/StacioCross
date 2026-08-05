@@ -27,7 +27,8 @@ pub const INSPECTOR_SEGMENTS: [&str; 7] = [
 /// 会话树节点。
 #[derive(Debug, Clone)]
 pub struct SessionNode {
-    pub id: usize,
+    /// stacio_core 的会话 id（String）。
+    pub id: String,
     pub name: String,
     pub host: String,
 }
@@ -35,6 +36,8 @@ pub struct SessionNode {
 #[derive(Debug, Clone)]
 pub struct FolderNode {
     pub name: String,
+    /// 子文件夹（多级树）。
+    pub folders: Vec<FolderNode>,
     pub sessions: Vec<SessionNode>,
 }
 
@@ -66,23 +69,8 @@ pub struct Workbench {
 
 impl Workbench {
     pub fn new(initial_model: Arc<Mutex<TerminalModel>>, initial_title: &str) -> Self {
-        let folders = vec![
-            FolderNode {
-                name: "Production".to_string(),
-                sessions: vec![
-                    SessionNode { id: 1, name: "web-01".to_string(), host: "10.0.1.10".to_string() },
-                    SessionNode { id: 2, name: "web-02".to_string(), host: "10.0.1.11".to_string() },
-                    SessionNode { id: 3, name: "db-01".to_string(), host: "10.0.2.10".to_string() },
-                ],
-            },
-            FolderNode {
-                name: "Staging".to_string(),
-                sessions: vec![
-                    SessionNode { id: 4, name: "stg-01".to_string(), host: "10.1.1.10".to_string() },
-                    SessionNode { id: 5, name: "stg-02".to_string(), host: "10.1.1.11".to_string() },
-                ],
-            },
-        ];
+        // 会话树来自 stacio_core 真实库（正式实施阶段）；空库时侧栏显示空态提示。
+        let folders = load_session_tree();
 
         Self {
             folders,
@@ -120,6 +108,110 @@ impl Workbench {
     }
 }
 
+/// 从 stacio_core 加载真实会话树；失败/空库时返回空列表。
+fn load_session_tree() -> Vec<FolderNode> {
+    let handle = stacio_core_bridge::CoreHandle::new();
+    match handle.session_sidebar_snapshot() {
+        Ok(snap) => build_folder_tree(&snap),
+        Err(e) => {
+            log::warn!("加载会话树失败: {e}");
+            Vec::new()
+        }
+    }
+}
+
+/// 把 core 快照（扁平 folders + 带 folder_id 的 sessions）构造成嵌套树。
+/// 无文件夹的会话归入 "Ungrouped"；子文件夹挂在父文件夹下。
+fn build_folder_tree(snap: &stacio_core_bridge::SessionSidebarSnapshot) -> Vec<FolderNode> {
+    use std::collections::HashMap;
+
+    let mut by_id: HashMap<&str, FolderNode> = HashMap::new();
+    for f in &snap.folders {
+        by_id.insert(
+            f.id.as_str(),
+            FolderNode {
+                name: f.name.clone(),
+                folders: Vec::new(),
+                sessions: Vec::new(),
+            },
+        );
+    }
+    for s in &snap.sessions {
+        let node = SessionNode {
+            id: s.id.clone(),
+            name: s.name.clone(),
+            host: s.host.clone(),
+        };
+        match s.folder_id.as_deref().and_then(|id| by_id.get_mut(id)) {
+            Some(folder) => folder.sessions.push(node),
+            None => {
+                let entry = by_id.entry("__ungrouped__").or_insert_with(|| FolderNode {
+                    name: "Ungrouped".to_string(),
+                    folders: Vec::new(),
+                    sessions: Vec::new(),
+                });
+                entry.sessions.push(node);
+            }
+        }
+    }
+
+    let mut roots: Vec<FolderNode> = Vec::new();
+    for f in &snap.folders {
+        let node = by_id.remove(f.id.as_str()).expect("folder exists");
+        match f.parent_id.as_deref() {
+            Some(parent) => {
+                if let Some(p) = by_id.get_mut(parent) {
+                    p.folders.push(node);
+                } else {
+                    roots.push(node); // 父不存在则提升为顶层
+                }
+            }
+            None => roots.push(node),
+        }
+    }
+    if let Some(u) = by_id.remove("__ungrouped__") {
+        roots.push(u);
+    }
+    roots
+}
+
+/// 递归渲染文件夹（含子文件夹与会话）。
+fn show_folder(
+    ui: &mut egui::Ui,
+    wb: &Workbench,
+    folder: &FolderNode,
+    path: &str,
+    opened: &mut Option<String>,
+) {
+    let salt = format!("folder-{path}");
+    egui::CollapsingHeader::new(&folder.name)
+        .id_salt(salt)
+        .default_open(true)
+        .show(ui, |ui| {
+            for child in &folder.folders {
+                show_folder(ui, wb, child, &format!("{path}/{}", child.name), opened);
+            }
+            for s in &folder.sessions {
+                if !wb.search.is_empty()
+                    && !s.name.contains(&wb.search)
+                    && !s.host.contains(&wb.search)
+                {
+                    continue;
+                }
+                let label = egui::Label::new(format!("* {}", s.name)).selectable(true);
+                let resp = ui.add(label);
+                // 拖拽会话（PoC：载荷为会话名）。
+                if resp.drag_started() {
+                    egui::DragAndDrop::set_payload(ui.ctx(), s.name.clone());
+                }
+                if resp.double_clicked() {
+                    *opened = Some(s.name.clone());
+                }
+                resp.on_hover_text(format!("{} (double-click to open)", s.host));
+            }
+        });
+}
+
 /// 渲染侧栏。返回被双击打开的会话名。
 pub fn show_sidebar(ui: &mut egui::Ui, wb: &mut Workbench) -> Option<String> {
     let mut opened = None;
@@ -132,33 +224,19 @@ pub fn show_sidebar(ui: &mut egui::Ui, wb: &mut Workbench) -> Option<String> {
     );
     ui.add_space(6.0);
 
-    egui::ScrollArea::vertical().show(ui, |ui| {
-        for folder in &wb.folders {
-            egui::CollapsingHeader::new(&folder.name)
-                .id_salt(format!("folder-{}", folder.name))
-                .default_open(true)
-                .show(ui, |ui| {
-                    for s in &folder.sessions {
-                        if !wb.search.is_empty()
-                            && !s.name.contains(&wb.search)
-                            && !s.host.contains(&wb.search)
-                        {
-                            continue;
-                        }
-                        let label = egui::Label::new(format!("* {}", s.name)).selectable(true);
-                        let resp = ui.add(label);
-                        // 拖拽会话（PoC：载荷为会话名）。
-                        if resp.drag_started() {
-                            egui::DragAndDrop::set_payload(ui.ctx(), s.name.clone());
-                        }
-                        if resp.double_clicked() {
-                            opened = Some(s.name.clone());
-                        }
-                        resp.on_hover_text(format!("{} (double-click to open)", s.host));
-                    }
-                });
-        }
-    });
+    if wb.folders.is_empty() {
+        // 空库提示（正式实施阶段：会话来自 stacio_core 数据库）。
+        ui.add_space(12.0);
+        ui.label("会话库为空");
+        ui.small(format!("数据库: {}", stacio_core_bridge::CoreHandle::new().db_path()));
+        ui.small("在 stacio_core 中创建会话后此处显示");
+    } else {
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for folder in &wb.folders {
+                show_folder(ui, wb, folder, &folder.name, &mut opened);
+            }
+        });
+    }
 
     opened
 }

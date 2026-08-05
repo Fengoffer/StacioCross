@@ -255,6 +255,14 @@ impl App {
                 ui.horizontal_wrapped(|ui| {
                     ui.strong("Stacio Workbench PoC");
                     ui.separator();
+                    // 共享核心健康状态（stacio_core 直接依赖）。
+                    let h = stacio_core_bridge::CoreHandle::new().health();
+                    ui.label(format!(
+                        "core {} v{}: {}",
+                        h.app,
+                        h.version,
+                        if h.ok { "ok" } else { "!" }
+                    ));
                     ui.label(format!("FPS: {:.0}", self.fps));
                     ui.label(format!("avg: {:.2} ms", self.avg_frame_ms()));
                     ui.label(format!("peak: {:.2} ms", self.peak_frame_ms));

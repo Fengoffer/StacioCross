@@ -3,3 +3,6 @@
 .DS_Store
 Cargo.lock.bak
 *.dSYM
+# vendor/stacio_core 内部可能的构建产物（sync 脚本已排除，防御性兜底）
+/vendor/stacio_core/target
+/vendor/stacio_core/Vendor/*/target
