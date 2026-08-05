@@ -59,6 +59,8 @@ pub struct Workbench {
     pub inspector_seg: usize,
     pub search: String,
     pub uploads: Vec<String>,
+    /// Files 面板的本地文件列表（可拖到终端上传）。
+    pub local_files: Vec<String>,
     next_session_id: usize,
 }
 
@@ -93,6 +95,10 @@ impl Workbench {
             inspector_seg: 0,
             search: String::new(),
             uploads: Vec::new(),
+            local_files: ["deploy.sh", "config.yaml", "app.log", "backup.tar.gz", "notes.md"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             next_session_id: 100,
         }
     }
@@ -271,16 +277,45 @@ pub fn show_inspector(ui: &mut egui::Ui, wb: &mut Workbench) {
 }
 
 /// Files 面板：本地文件列表，可拖到终端上传。
+/// "Open…" / "Save…" 调用平台原生文件对话框（PlatformAdapter::FileDialog）。
 fn show_files_pane(ui: &mut egui::Ui, wb: &mut Workbench) {
     ui.heading("Local Files");
     ui.add_space(4.0);
+
+    // 原生文件对话框按钮。
+    ui.horizontal(|ui| {
+        if ui.small_button("Open…").clicked() {
+            let adapter = stacio_platform::default_adapter();
+            if let Some(path) = adapter.pick_file("Select file to upload") {
+                let name = std::path::Path::new(&path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(&path)
+                    .to_string();
+                wb.local_files.push(name);
+            }
+        }
+        if ui.small_button("Save…").clicked() {
+            let adapter = stacio_platform::default_adapter();
+            if let Some(path) = adapter.save_file("Save file as", "untitled.txt") {
+                let name = std::path::Path::new(&path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(&path)
+                    .to_string();
+                wb.uploads.push(format!("saved → {name}"));
+            }
+        }
+    });
+    ui.add_space(4.0);
+
     egui::ScrollArea::vertical().show(ui, |ui| {
-        for name in ["deploy.sh", "config.yaml", "app.log", "backup.tar.gz", "notes.md"] {
+        for name in &wb.local_files {
             let resp = ui.add(egui::Label::new(format!("- {name}")).selectable(true));
             if resp.drag_started() {
                 egui::DragAndDrop::set_payload(
                     ui.ctx(),
-                    FilePayload { name: name.to_string() },
+                    FilePayload { name: name.clone() },
                 );
             }
             resp.on_hover_text("drag onto terminal to upload");
