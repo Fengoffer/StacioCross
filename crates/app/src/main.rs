@@ -1,4 +1,6 @@
-fn main() {
-    env_logger::init();
-    log::info!("stacio-app starting");
+mod app;
+mod terminal_view;
+
+fn main() -> anyhow::Result<()> {
+    app::run()
 }

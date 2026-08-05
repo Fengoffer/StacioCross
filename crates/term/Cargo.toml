@@ -9,3 +9,5 @@ alacritty_terminal.workspace = true
 wgpu.workspace = true
 ab_glyph.workspace = true
 log.workspace = true
+bytemuck = { version = "1", features = ["derive"] }
+anyhow.workspace = true

@@ -17,14 +17,15 @@ authors = ["Stacio Cross Platform Team"]
 alacritty_terminal = "0.26.0"
 
 # --- graphics ---
-wgpu = "30.0.0"
+# 与 egui-wgpu 0.35 对齐（其依赖 wgpu 29）。三端必须同一 wgpu 大版本，类型才互通。
+wgpu = "29.0"
 ab_glyph = "0.2"
 
 # --- UI (egui + winit) ---
 egui = "0.35.0"
 egui-winit = "0.35.0"
 egui-wgpu = "0.35.0"
-winit = "0.31.0-beta.2"
+winit = "0.30.13"
 
 # --- utility ---
 pollster = "0.4"
