@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use stacio_term::model::{TerminalModel, TerminalSize};
 use stacio_term::renderer::{FontPair, TerminalRenderer};
-use crate::terminal_view::TerminalCallback;
+use crate::workbench::Workbench;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::WindowEvent;
@@ -57,8 +57,8 @@ struct App {
     egui_state: Option<egui_winit::State>,
     gpu: Option<GpuState>,
 
-    /// 终端模型（被输入线程 / 渲染回调共享）。
-    terminal: Option<Arc<Mutex<TerminalModel>>>,
+    /// 三栏工作台（侧栏 / 工作区 / Inspector）。
+    workbench: Option<Workbench>,
     terminal_renderer: Option<Arc<Mutex<TerminalRenderer>>>,
 
     // 压测状态
@@ -75,16 +75,19 @@ struct App {
 
 impl App {
     fn new(stress: bool, screenshot_path: Option<String>) -> Self {
+        let egui_ctx = egui::Context::default();
+        // 与 Mac 版 Stacio Dark 主题对齐。
+        egui_ctx.set_theme(egui::Theme::Dark);
         Self {
             stress,
             screenshot_path,
             frame_count: 0,
             exit_requested: false,
-            egui_ctx: egui::Context::default(),
+            egui_ctx,
             window: None,
             egui_state: None,
             gpu: None,
-            terminal: None,
+            workbench: None,
             terminal_renderer: None,
             stop_signal: None,
             stress_thread: None,
@@ -194,6 +197,9 @@ impl App {
         )));
         let terminal = Arc::new(Mutex::new(TerminalModel::new(TerminalSize::new(100, 30))));
 
+        // 三栏工作台（初始标签 = 压测目标终端）。
+        let workbench = Workbench::new(terminal.clone(), "web-01");
+
         // 压测模式：后台线程持续注入彩色日志流。
         if self.stress {
             let stop = Arc::new(AtomicBool::new(false));
@@ -226,19 +232,19 @@ impl App {
             surface_config,
             egui_renderer,
         });
-        self.terminal = Some(terminal);
+        self.workbench = Some(workbench);
         self.terminal_renderer = Some(terminal_renderer);
         Ok(())
     }
 
     fn build_ui(&mut self, ui: &mut egui::Ui) {
-        let Some(model) = self.terminal.clone() else { return };
         let Some(renderer) = self.terminal_renderer.clone() else { return };
+        let Some(mut wb) = self.workbench.take() else { return };
 
         egui::Panel::top("stats_panel")
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    ui.strong("Stacio Terminal Render PoC");
+                    ui.strong("Stacio Workbench PoC");
                     ui.separator();
                     ui.label(format!("FPS: {:.0}", self.fps));
                     ui.label(format!("avg: {:.2} ms", self.avg_frame_ms()));
@@ -246,46 +252,37 @@ impl App {
                     if self.stress {
                         let mb = self.bytes_fed.load(Ordering::Relaxed) as f64 / 1e6;
                         ui.label(format!("fed: {mb:.1} MB"));
-                    } else {
-                        ui.label("awaiting PTY / StacioCore");
                     }
                 });
             });
 
-        egui::CentralPanel::default().show(ui, |ui| {
-            let rect = ui.available_rect_before_wrap();
-            if rect.width() < 10.0 || rect.height() < 10.0 {
-                return;
-            }
-            let ppi = ui.ctx().pixels_per_point();
+        // 侧栏（左）。
+        egui::Panel::left("sidebar")
+            .exact_size(220.0)
+            .show(ui, |ui| {
+                if let Some(name) = crate::workbench::show_sidebar(ui, &mut wb) {
+                    wb.open_tab(&renderer, &name);
+                }
+            });
 
-            // 依据可用区域计算网格列/行，并同步模型尺寸。
-            let (cw, ch) = {
-                let r = renderer.lock().unwrap();
-                let m = r.metrics();
-                (m.cell_width, m.cell_height)
-            };
-            let cols = (rect.width() * ppi / cw) as usize;
-            let rows = (rect.height() * ppi / ch) as usize;
-            {
-                let mut m = model.lock().unwrap();
-                let cur = m.size();
-                if cur.columns != cols || cur.rows != rows {
-                    m.resize(TerminalSize::new(cols.max(1), rows.max(1)));
+        // Inspector（右）。
+        egui::Panel::right("inspector")
+            .exact_size(300.0)
+            .show(ui, |ui| {
+                crate::workbench::show_inspector(ui, &mut wb);
+            });
+
+        // 工作区（中）。
+        egui::CentralPanel::default().show(ui, |ui| {
+            if let Some(idx) = crate::workbench::show_workspace(ui, &mut wb, &renderer) {
+                wb.tabs.remove(idx);
+                if wb.active_tab >= wb.tabs.len() && !wb.tabs.is_empty() {
+                    wb.active_tab = wb.tabs.len() - 1;
                 }
             }
-
-            // 终端区域 = 网格整数格回算，避免子像素闪烁。
-            let tw = cols as f32 * cw / ppi;
-            let th = rows as f32 * ch / ppi;
-            let term_rect = egui::Rect::from_min_size(rect.min, egui::Vec2::new(tw, th));
-
-            let callback = TerminalCallback { model, renderer };
-            ui.painter().add(egui::Shape::Callback(egui_wgpu::Callback::new_paint_callback(
-                term_rect,
-                callback,
-            )));
         });
+
+        self.workbench = Some(wb);
     }
 
     fn avg_frame_ms(&self) -> f64 {
