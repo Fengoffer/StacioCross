@@ -20,6 +20,15 @@ use winit::window::{Window, WindowId};
 pub fn run() -> anyhow::Result<()> {
     env_logger::init();
 
+    // 单实例守卫：防止多开。第二实例直接退出。
+    // 正式版应把命令行参数（如 stacio:// 链接）转交给首实例，PoC 阶段仅阻止重复启动。
+    // acquire() 返回 false 含两种情况：已有实例在跑，或锁原语创建失败（fail-closed）。
+    let adapter = stacio_platform::default_adapter();
+    if !adapter.acquire() {
+        log::warn!("单实例守卫未通过（可能已有实例运行，或系统锁获取失败），本次启动中止。");
+        return Ok(());
+    }
+
     let mut args = std::env::args().skip(1);
     let stress = args.any(|a| a == "--stress");
     let screenshot_path = std::env::args()

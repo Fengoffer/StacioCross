@@ -1,0 +1,33 @@
+name: CI
+
+# 跨平台编译 + 平台适配层运行时测试。
+# 关键价值：在 windows-latest 上真实运行 CredentialStore / SingleInstance 的 Win32 FFI，
+# 弥补本机（macOS）无法执行 Windows 适配器的缺口。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # 平台适配层运行时测试：
+      #   Windows → CredWriteW/CredReadW/CredDeleteW + CreateMutexW 单实例
+      #   macOS/Linux → flock 单实例
+      - name: Build & test platform crate
+        run: cargo test -p stacio-platform
+      # 整个 workspace 编译检查（含 wgpu/egui 重依赖）。
+      - name: Workspace check
+        run: cargo check --workspace
