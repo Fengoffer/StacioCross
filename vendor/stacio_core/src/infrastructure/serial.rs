@@ -188,7 +188,15 @@ impl ShellChannel for SerialShellChannel {
     }
 
     fn wait_interest(&self) -> Option<ShellWaitInterest> {
-        Some(ShellWaitInterest::readable(self.device.as_raw_fd()))
+        // Unix 用 TTYPort 的原始 fd；Windows（COMPort）暂不支持事件驱动等待。
+        #[cfg(unix)]
+        {
+            return Some(ShellWaitInterest::readable(self.device.as_raw_fd()));
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
     }
 }
 

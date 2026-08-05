@@ -604,6 +604,7 @@ impl Libssh2Transport {
         })
     }
 
+    #[cfg(unix)]
     pub fn connect_with_proxy_jump_and_expected_session(
         &self,
         target_config: &SshConnectionConfig,
@@ -663,6 +664,18 @@ impl Libssh2Transport {
             _proxy_jump_bridge: bridge_handles,
             host_key,
             session_info,
+        })
+    }
+
+    #[cfg(not(unix))]
+    pub fn connect_with_proxy_jump_and_expected_session(
+        &self,
+        _target_config: &SshConnectionConfig,
+        _target_secret: Option<SshSecret>,
+        _proxy_jump: SshProxyJumpRuntimeConfig,
+    ) -> Result<Libssh2ConnectedSession, SshRuntimeError> {
+        Err(SshRuntimeError::Transport {
+            message: "ProxyJump is not supported on this platform".to_string(),
         })
     }
 
