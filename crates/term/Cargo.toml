@@ -1,0 +1,11 @@
+[package]
+name = "stacio-term"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+alacritty_terminal.workspace = true
+wgpu.workspace = true
+ab_glyph.workspace = true
+log.workspace = true

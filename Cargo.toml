@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/app",
+    "crates/term",
+    "crates/platform",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Stacio Source Available Non-Commercial License 1.0"
+authors = ["Stacio Cross Platform Team"]
+
+[workspace.dependencies]
+# --- terminal core ---
+alacritty_terminal = "0.26.0"
+
+# --- graphics ---
+wgpu = "30.0.0"
+ab_glyph = "0.2"
+
+# --- UI (egui + winit) ---
+egui = "0.35.0"
+egui-winit = "0.35.0"
+egui-wgpu = "0.35.0"
+winit = "0.31.0-beta.2"
+
+# --- utility ---
+pollster = "0.4"
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
