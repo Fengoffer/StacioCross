@@ -7,6 +7,11 @@ members = [
     "crates/core-bridge",
 ]
 
+# stacio_core 是纯路径依赖，不作为 workspace 成员构建。
+# 否则 cargo check --workspace 会按成员用默认 features（含 rdpdr）构建，
+# 使 Windows 编译 ironrdp-rdpdr-native 失败（仅 nix backend）。
+exclude = ["vendor/stacio_core"]
+
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
