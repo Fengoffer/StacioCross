@@ -4,6 +4,7 @@ members = [
     "crates/app",
     "crates/term",
     "crates/platform",
+    "crates/core-bridge",
 ]
 
 [workspace.package]
@@ -32,3 +33,7 @@ pollster = "0.4"
 anyhow = "1"
 log = "0.4"
 env_logger = "0.11"
+
+# stacio_core 依赖的 vendored patch（patch 只在顶层 workspace 生效，须与 StacioCore 同步）。
+[patch.crates-io]
+ironrdp-tls = { path = "vendor/stacio_core/Vendor/ironrdp-tls" }

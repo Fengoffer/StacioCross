@@ -1,0 +1,13 @@
+[package]
+name = "stacio-core-bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "UI 面对接层：封装 stacio_core（共享 Rust Core），供 egui 自绘 UI 直接调用"
+
+[dependencies]
+# 共享 Rust Core（vendor 快照）。Linux 直接 crate 依赖（同语言）；Windows UI 同为 Rust，
+# 同样直接依赖，无需 UniFFI。
+# 公共仓（Fengoffer/Stacio main）不含 StacioCore/Vendor（vendored ironrdp），
+# 故以 vendor/ 快照保证 workspace 自包含；同步见 scripts/sync-core.sh。
+stacio_core = { path = "../../vendor/stacio_core" }
