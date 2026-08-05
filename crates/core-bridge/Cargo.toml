@@ -10,4 +10,4 @@ description = "UI 面对接层：封装 stacio_core（共享 Rust Core），供 
 # 同样直接依赖，无需 UniFFI。
 # 公共仓（Fengoffer/Stacio main）不含 StacioCore/Vendor（vendored ironrdp），
 # 故以 vendor/ 快照保证 workspace 自包含；同步见 scripts/sync-core.sh。
-stacio_core = { path = "../../vendor/stacio_core" }
+stacio_core = { path = "../../vendor/stacio_core", default-features = false }
