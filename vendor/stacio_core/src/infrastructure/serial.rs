@@ -1,8 +1,19 @@
 use std::io::{self, Read, Write};
+#[cfg(unix)]
 use std::os::fd::AsRawFd;
 use std::time::Duration;
 
-use serialport::{DataBits, FlowControl, Parity, StopBits, TTYPort};
+use serialport::{DataBits, FlowControl, Parity, StopBits};
+#[cfg(unix)]
+use serialport::TTYPort;
+#[cfg(not(unix))]
+use serialport::COMPort;
+
+/// 串口设备类型：Unix 用 TTYPort，Windows 用 COMPort（serialport 平台特化）。
+#[cfg(unix)]
+type SerialPortDevice = TTYPort;
+#[cfg(not(unix))]
+type SerialPortDevice = COMPort;
 
 use crate::domain::{
     serial::{validate_serial_config, SerialConnectionConfig},
@@ -12,7 +23,7 @@ use crate::services::live_shell_service::{ShellChannel, ShellWaitInterest};
 
 #[derive(Debug)]
 pub struct SerialShellChannel {
-    device: TTYPort,
+    device: SerialPortDevice,
     eof: bool,
     maps_delete_to_backspace: bool,
 }
@@ -49,7 +60,7 @@ fn open_with_retry(
     device_path: &str,
     baud_rate: u32,
     config: &SerialConnectionConfig,
-) -> Result<TTYPort, SshRuntimeError> {
+) -> Result<SerialPortDevice, SshRuntimeError> {
     for attempt in 0..3 {
         if attempt > 0 {
             std::thread::sleep(Duration::from_millis(300 * attempt as u64));
@@ -219,7 +230,7 @@ fn serial_transport_error(message: &str) -> SshRuntimeError {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(unix, test))]
 mod tests {
     use super::{
         resolved_serial_device_path_with_exists, set_local_carrier_mode, SerialShellChannel,
