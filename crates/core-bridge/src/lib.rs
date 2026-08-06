@@ -9,6 +9,7 @@
 
 use std::path::PathBuf;
 
+pub use stacio_core::domain::files::{RemoteFileEntry, RemoteFileKind};
 pub use stacio_core::domain::session::{
     QuickConnectTarget, SessionDraft, SessionError, SessionFolder, SessionRecord,
     SessionSidebarSnapshot, SessionUpdate,
@@ -86,6 +87,26 @@ impl CoreHandle {
     /// 解析 `user@host:port` 快速连接串。
     pub fn parse_quick_connect(&self, input: &str) -> Result<QuickConnectTarget, SessionError> {
         stacio_core::parse_quick_connect(input.to_owned())
+    }
+
+    // -----------------------------------------------------------------------
+    // 文件传输（P4-4：SFTP 列目录）
+    // -----------------------------------------------------------------------
+
+    /// 列出远程 SFTP 目录（每次调用以 config+secret+fingerprint 独立建连）。
+    pub fn list_sftp_directory(
+        &self,
+        config: SshConnectionConfig,
+        secret: SshAuthSecret,
+        expected_fingerprint_sha256: &str,
+        remote_path: &str,
+    ) -> Result<Vec<RemoteFileEntry>, SshRuntimeError> {
+        stacio_core::list_live_sftp_directory(
+            config,
+            secret,
+            expected_fingerprint_sha256.to_owned(),
+            remote_path.to_owned(),
+        )
     }
 
     // -----------------------------------------------------------------------

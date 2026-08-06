@@ -112,8 +112,10 @@ pub struct Workbench {
     pub inspector_seg: usize,
     pub search: String,
     pub uploads: Vec<String>,
-    /// Files 面板的本地文件列表（可拖到终端上传）。
-    pub local_files: Vec<String>,
+    /// Files 面板：本地真实浏览器。
+    pub local_browser: crate::files_pane::LocalBrowser,
+    /// Files 面板：SFTP 远程浏览。
+    pub remote_fs: Arc<Mutex<crate::files_pane::RemoteFsState>>,
     /// 会话编辑对话框（None = 关闭）。
     pub session_edit: Option<SessionEditDraft>,
     /// 文件夹编辑对话框（None = 关闭）。
@@ -136,10 +138,8 @@ impl Workbench {
             inspector_seg: 0,
             search: String::new(),
             uploads: Vec::new(),
-            local_files: ["deploy.sh", "config.yaml", "app.log", "backup.tar.gz", "notes.md"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
+            local_browser: crate::files_pane::LocalBrowser::new(),
+            remote_fs: Arc::new(Mutex::new(crate::files_pane::RemoteFsState::new())),
             session_edit: None,
             folder_edit: None,
         }
@@ -881,54 +881,186 @@ pub fn show_inspector(ui: &mut egui::Ui, wb: &mut Workbench) {
 
 /// Files 面板：本地文件列表，可拖到终端上传。
 /// "Open…" / "Save…" 调用平台原生文件对话框（PlatformAdapter::FileDialog）。
+/// Files 面板：本地 / 远程双栏浏览（功能清单 3.1/3.2 子集）。
 fn show_files_pane(ui: &mut egui::Ui, wb: &mut Workbench) {
-    ui.heading("Local Files");
-    ui.add_space(4.0);
-
-    // 原生文件对话框按钮。
-    ui.horizontal(|ui| {
-        if ui.small_button("Open…").clicked() {
-            let adapter = stacio_platform::default_adapter();
-            if let Some(path) = adapter.pick_file("Select file to upload") {
-                let name = std::path::Path::new(&path)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(&path)
-                    .to_string();
-                wb.local_files.push(name);
-            }
-        }
-        if ui.small_button("Save…").clicked() {
-            let adapter = stacio_platform::default_adapter();
-            if let Some(path) = adapter.save_file("Save file as", "untitled.txt") {
-                let name = std::path::Path::new(&path)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(&path)
-                    .to_string();
-                wb.uploads.push(format!("saved → {name}"));
-            }
-        }
-    });
-    ui.add_space(4.0);
-
-    egui::ScrollArea::vertical().show(ui, |ui| {
-        for name in &wb.local_files {
-            let resp = ui.add(egui::Label::new(format!("- {name}")).selectable(true));
-            if resp.drag_started() {
-                egui::DragAndDrop::set_payload(
-                    ui.ctx(),
-                    FilePayload { name: name.clone() },
-                );
-            }
-            resp.on_hover_text("drag onto terminal to upload");
-        }
+    ui.columns(2, |cols| {
+        // 本地栏。
+        cols[0].heading("本地");
+        show_local_pane(&mut cols[0], wb);
+        // 远程栏。
+        cols[1].heading("远程");
+        show_remote_pane(&mut cols[1], &wb.remote_fs);
     });
     ui.add_space(6.0);
     ui.separator();
     ui.heading("Recent uploads");
     for u in wb.uploads.iter().rev().take(5) {
         ui.label(format!("> {u}"));
+    }
+}
+
+/// 本地真实文件浏览器（std::fs）。
+fn show_local_pane(ui: &mut egui::Ui, wb: &mut Workbench) {
+    // 原生文件对话框按钮。
+    ui.horizontal(|ui| {
+        if ui.small_button("Open…").clicked() {
+            let adapter = stacio_platform::default_adapter();
+            if let Some(path) = adapter.pick_file("Select file to upload") {
+                if let Some(name) = std::path::Path::new(&path).file_name() {
+                    wb.uploads.push(format!("picked → {}", name.to_string_lossy()));
+                }
+            }
+        }
+        if ui.small_button("Save…").clicked() {
+            let adapter = stacio_platform::default_adapter();
+            if let Some(path) = adapter.save_file("Save file as", "untitled.txt") {
+                if let Some(name) = std::path::Path::new(&path).file_name() {
+                    wb.uploads.push(format!("saved → {}", name.to_string_lossy()));
+                }
+            }
+        }
+    });
+    ui.small(wb.local_browser.cwd.display().to_string());
+    ui.separator();
+
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        // 返回上级。
+        if ui.small_button("⬆ ..").clicked() {
+            wb.local_browser.go_up();
+        }
+        let mut enter = None;
+        for e in &wb.local_browser.entries {
+            let prefix = if e.is_dir { "📁" } else { "📄" };
+            let resp = ui.add(egui::Label::new(format!("{prefix} {}", e.name)).selectable(true));
+            if resp.double_clicked() && e.is_dir {
+                enter = Some(e.name.clone());
+            }
+            if resp.drag_started() {
+                egui::DragAndDrop::set_payload(ui.ctx(), FilePayload { name: e.name.clone() });
+            }
+            resp.on_hover_text(if e.is_dir {
+                "double-click to open".to_string()
+            } else {
+                format!("{} bytes · drag onto terminal to upload", e.size)
+            });
+        }
+        if let Some(name) = enter {
+            wb.local_browser.enter(&name);
+        }
+    });
+}
+
+/// SFTP 远程浏览：连接表单 → 指纹确认 → 列目录 / 导航。
+fn show_remote_pane(ui: &mut egui::Ui, state: &Arc<Mutex<crate::files_pane::RemoteFsState>>) {
+    use crate::files_pane::{begin_connect, confirm_host_key, navigate, RemoteFsPhase};
+    use stacio_core_bridge::RemoteFileKind;
+
+    let mut connect = false;
+    let mut confirm = false;
+    let mut cancel_confirm = false;
+    let mut nav: Option<String> = None;
+    let mut back = false;
+
+    {
+        let mut st = state.lock().unwrap();
+        match &st.phase {
+            RemoteFsPhase::Auth => {
+                if ui.button("连接 SFTP").clicked() {
+                    connect = true;
+                }
+                ui.horizontal(|ui| {
+                    ui.label("主机");
+                    ui.text_edit_singleline(&mut st.host);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("端口");
+                    ui.add(egui::DragValue::new(&mut st.port).range(1..=65535));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("用户");
+                    ui.text_edit_singleline(&mut st.username);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("密码");
+                    ui.add(egui::TextEdit::singleline(&mut st.password).password(true));
+                });
+                ui.checkbox(&mut st.use_agent, "Agent");
+            }
+            RemoteFsPhase::Busy(msg) => {
+                ui.label(format!("⏳ {msg}"));
+            }
+            RemoteFsPhase::ConfirmHostKey {
+                fingerprint,
+                previous,
+                ..
+            } => {
+                if previous.is_some() {
+                    ui.colored_label(egui::Color32::from_rgb(220, 90, 90), "⚠ 主机密钥已变更");
+                } else {
+                    ui.label("首次连接，确认指纹：");
+                }
+                ui.label(format!("SHA256: {fingerprint}"));
+                ui.horizontal(|ui| {
+                    if ui.button("信任并连接").clicked() {
+                        confirm = true;
+                    }
+                    if ui.button("取消").clicked() {
+                        cancel_confirm = true;
+                    }
+                });
+            }
+            RemoteFsPhase::Ready => {
+                ui.small(&st.cwd);
+                ui.separator();
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    if ui.small_button("⬆ ..").clicked() {
+                        nav = Some("..".to_string());
+                    }
+                    for e in &st.entries {
+                        let prefix = match e.kind {
+                            RemoteFileKind::Directory => "📁",
+                            RemoteFileKind::Symlink => "🔗",
+                            RemoteFileKind::File => "📄",
+                        };
+                        let resp =
+                            ui.add(egui::Label::new(format!("{prefix} {}", e.path)).selectable(true));
+                        if resp.double_clicked() && e.kind == RemoteFileKind::Directory {
+                            nav = Some(e.path.clone());
+                        }
+                        resp.on_hover_text(if e.kind == RemoteFileKind::Directory {
+                            "double-click to open".to_string()
+                        } else {
+                            format!("{} bytes", e.size)
+                        });
+                    }
+                });
+            }
+            RemoteFsPhase::Failed(msg) => {
+                ui.colored_label(egui::Color32::from_rgb(220, 90, 90), msg);
+                if ui.button("返回").clicked() {
+                    back = true;
+                }
+            }
+        }
+    }
+
+    // 释放锁后再触发动作（避免跨阻塞调用持锁）。
+    if connect {
+        begin_connect(state);
+    }
+    if confirm {
+        confirm_host_key(state);
+    }
+    if cancel_confirm {
+        state.lock().unwrap().phase = RemoteFsPhase::Auth;
+    }
+    if let Some(n) = nav {
+        if state.lock().unwrap().fingerprint.is_some() {
+            navigate(state, &n);
+        }
+    }
+    if back {
+        state.lock().unwrap().phase = RemoteFsPhase::Auth;
     }
 }
 
