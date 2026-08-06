@@ -159,19 +159,23 @@ impl Workbench {
         self.active_tab = self.tabs.len() - 1;
     }
 
-    /// 打开 SSH 会话标签（Auth 阶段起步）。
+    /// 打开会话标签（按协议：ssh / telnet / serial；其他协议暂以本地终端打开）。
     pub fn open_ssh_tab(&mut self, renderer: &Arc<Mutex<TerminalRenderer>>, session: &SessionNode) {
         let _ = renderer;
         let model = Arc::new(Mutex::new(TerminalModel::new(stacio_term::model::TerminalSize::new(
             100, 30,
         ))));
-        let state = crate::ssh_tab::SshTabState::new(
-            &session.host,
-            session.port,
-            session.username.as_deref().unwrap_or("root"),
-        );
+        let state = match session.protocol.to_ascii_lowercase().as_str() {
+            "telnet" => crate::ssh_tab::SshTabState::new_telnet(&session.host, session.port),
+            "serial" => crate::ssh_tab::SshTabState::new_serial(&session.host, 115_200),
+            _ => crate::ssh_tab::SshTabState::new(
+                &session.host,
+                session.port,
+                session.username.as_deref().unwrap_or("root"),
+            ),
+        };
         self.tabs.push(Tab {
-            title: format!("{}@{}", state.username, state.host),
+            title: session.name.clone(),
             model,
             kind: TabKind::Ssh(Arc::new(Mutex::new(state))),
         });
@@ -732,23 +736,47 @@ fn render_ssh_phase_ui(
     state: &Arc<Mutex<crate::ssh_tab::SshTabState>>,
     model: &Arc<Mutex<TerminalModel>>,
 ) {
-    use crate::ssh_tab::SshPhase;
+    use crate::ssh_tab::{ShellKind, SshPhase};
     match &st.phase {
         SshPhase::Auth => {
             ui.add_space(12.0);
-            ui.heading("SSH 连接");
+            let heading = match st.kind {
+                ShellKind::Ssh => "SSH 连接",
+                ShellKind::Telnet => "Telnet 连接",
+                ShellKind::Serial => "串口连接",
+            };
+            ui.heading(heading);
             ui.label(format!("{}:{}", st.host, st.port));
             ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.label("用户名");
-                ui.text_edit_singleline(&mut st.username);
-            });
-            ui.horizontal(|ui| {
-                ui.label("密码");
-                ui.add(egui::TextEdit::singleline(&mut st.password).password(true));
-            });
-            ui.checkbox(&mut st.use_agent, "使用 SSH Agent");
-            ui.add_space(6.0);
+            match st.kind {
+                ShellKind::Ssh => {
+                    ui.horizontal(|ui| {
+                        ui.label("用户名");
+                        ui.text_edit_singleline(&mut st.username);
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("密码");
+                        ui.add(egui::TextEdit::singleline(&mut st.password).password(true));
+                    });
+                    ui.checkbox(&mut st.use_agent, "使用 SSH Agent");
+                    ui.add_space(6.0);
+                }
+                ShellKind::Telnet => {
+                    ui.label("无需认证，直接连接。");
+                    ui.add_space(6.0);
+                }
+                ShellKind::Serial => {
+                    ui.horizontal(|ui| {
+                        ui.label("设备");
+                        ui.text_edit_singleline(&mut st.host);
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("波特率");
+                        ui.add(egui::DragValue::new(&mut st.baud_rate).range(300..=921600));
+                    });
+                    ui.add_space(6.0);
+                }
+            }
             if ui.button("连接").clicked() {
                 let s = state.clone();
                 let m = model.clone();
