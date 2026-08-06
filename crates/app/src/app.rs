@@ -431,7 +431,7 @@ impl App {
         egui::Panel::right("inspector")
             .exact_size(300.0)
             .show(ui, |ui| {
-                crate::workbench::show_inspector(ui, &mut wb);
+                crate::workbench::show_inspector(ui, &mut wb, &self.license);
             });
 
         // 工作区（中）。
