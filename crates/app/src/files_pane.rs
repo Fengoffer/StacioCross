@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use stacio_core_bridge::{
-    CoreHandle, HostKeyTrustDecision, RemoteFileEntry, SshAuthMethod, SshAuthSecret,
-    SshConnectionConfig, SshRuntimeError,
+    CoreHandle, HostKeyTrustDecision, RemoteFileEntry, ScpDirection, ScpTransferJob,
+    SshAuthMethod, SshAuthSecret, SshConnectionConfig, SshRuntimeError,
 };
 
 // ---------------------------------------------------------------------------
@@ -109,6 +109,30 @@ pub struct RemoteFsState {
     pub fingerprint: Option<String>,
     pub cwd: String,
     pub entries: Vec<RemoteFileEntry>,
+    /// 进行中 / 已完成的传输（P4-5）。
+    pub transfers: Vec<TransferEntry>,
+}
+
+/// 一条传输记录（UI 队列展示 + 进度轮询）。
+#[derive(Debug, Clone)]
+pub struct TransferEntry {
+    pub job_id: String,
+    pub name: String,
+    pub direction: String,
+    pub bytes_done: u64,
+    pub bytes_total: u64,
+    pub status: String,
+    pub error: Option<String>,
+}
+
+impl TransferEntry {
+    pub fn percent(&self) -> f32 {
+        if self.bytes_total == 0 {
+            0.0
+        } else {
+            (self.bytes_done as f32 / self.bytes_total as f32).clamp(0.0, 1.0)
+        }
+    }
 }
 
 impl RemoteFsState {
@@ -123,6 +147,7 @@ impl RemoteFsState {
             fingerprint: None,
             cwd: "/".to_owned(),
             entries: Vec::new(),
+            transfers: Vec::new(),
         }
     }
 
@@ -299,5 +324,120 @@ pub fn navigate(state: &Arc<Mutex<RemoteFsState>>, name: &str) {
     };
     if let Some(fp) = fingerprint {
         list_dir(state, fp, next);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 文件传输（P4-5）
+// ---------------------------------------------------------------------------
+
+fn update_entry(state: &Arc<Mutex<RemoteFsState>>, job_id: &str, f: impl FnOnce(&mut TransferEntry)) {
+    let mut s = state.lock().unwrap();
+    if let Some(e) = s.transfers.iter_mut().find(|t| t.job_id == job_id) {
+        f(e);
+    }
+}
+
+/// 启动 SCP 传输（后台线程阻塞执行；进度推入 core 全局 registry，UI 轮询）。
+pub fn start_transfer(
+    state: &Arc<Mutex<RemoteFsState>>,
+    direction: ScpDirection,
+    local_path: String,
+    remote_path: String,
+) {
+    let (config, secret, fingerprint) = {
+        let s = state.lock().unwrap();
+        (s.config(), s.secret(), s.fingerprint.clone())
+    };
+    let (Some(secret), Some(fp)) = (secret, fingerprint) else { return };
+
+    let job_id = format!(
+        "job-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    );
+    let name = local_path
+        .rsplit('/')
+        .next()
+        .map(str::to_owned)
+        .or_else(|| remote_path.rsplit('/').next().map(str::to_owned))
+        .unwrap_or_else(|| "file".to_owned());
+    let bytes_total = std::fs::metadata(&local_path).map(|m| m.len()).unwrap_or(0);
+    {
+        let mut s = state.lock().unwrap();
+        s.transfers.push(TransferEntry {
+            job_id: job_id.clone(),
+            name: name.clone(),
+            direction: match direction {
+                ScpDirection::Upload => "↑ 上传".to_owned(),
+                ScpDirection::Download => "↓ 下载".to_owned(),
+            },
+            bytes_done: 0,
+            bytes_total,
+            status: "running".to_owned(),
+            error: None,
+        });
+    }
+
+    let st = state.clone();
+    std::thread::spawn(move || {
+        let job = ScpTransferJob {
+            id: job_id.clone(),
+            direction,
+            source_path: local_path,
+            destination_path: remote_path,
+            bytes_total,
+        };
+        match CoreHandle::new().run_scp_transfer(config, secret, &fp, job) {
+            Ok(progress) => {
+                let last = progress.last().cloned();
+                update_entry(&st, &job_id, |e| {
+                    if let Some(p) = last {
+                        e.bytes_done = p.bytes_done;
+                        if p.bytes_total > 0 {
+                            e.bytes_total = p.bytes_total;
+                        }
+                    }
+                    e.status = "completed".to_owned();
+                });
+            }
+            Err(err) => {
+                update_entry(&st, &job_id, |e| {
+                    e.status = "failed".to_owned();
+                    e.error = Some(err.to_string());
+                });
+            }
+        }
+    });
+}
+
+/// 轮询所有进行中传输的进度（每帧调用）。
+pub fn poll_transfers(state: &Arc<Mutex<RemoteFsState>>) {
+    let handle = CoreHandle::new();
+    let running: Vec<String> = state
+        .lock()
+        .unwrap()
+        .transfers
+        .iter()
+        .filter(|t| t.status == "running")
+        .map(|t| t.job_id.clone())
+        .collect();
+    for job_id in running {
+        if let Ok(events) = handle.take_scp_progress(&job_id) {
+            if let Some(last) = events.last() {
+                let mut s = state.lock().unwrap();
+                if let Some(e) = s.transfers.iter_mut().find(|t| t.job_id == job_id) {
+                    e.bytes_done = last.bytes_done;
+                    if last.bytes_total > 0 {
+                        e.bytes_total = last.bytes_total;
+                    }
+                    if last.status == "completed" || last.status == "done" {
+                        e.status = "completed".to_owned();
+                    }
+                }
+            }
+        }
     }
 }
