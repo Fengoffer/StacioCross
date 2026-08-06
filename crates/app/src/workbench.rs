@@ -1850,15 +1850,11 @@ fn show_logs_pane(ui: &mut egui::Ui, wb: &mut Workbench) {
         ui.label(format!("上传记录：{}", wb.uploads.len()));
         let handle = stacio_core_bridge::CoreHandle::new();
         // 会话 / 宏 / 传输统计（功能清单 6.9）。
-        match handle.session_sidebar_snapshot() {
-            Ok(snap) => {
-                ui.label(format!("会话：{}（{} 文件夹）", snap.sessions.len(), snap.folders.len()));
-            }
-            Err(_) => {}
+        if let Ok(snap) = handle.session_sidebar_snapshot() {
+            ui.label(format!("会话：{}（{} 文件夹）", snap.sessions.len(), snap.folders.len()));
         }
-        match handle.list_macros() {
-            Ok(macros) => ui.label(format!("宏：{}", macros.len())),
-            Err(_) => {}
+        if let Ok(macros) = handle.list_macros() {
+            ui.label(format!("宏：{}", macros.len()));
         }
         {
             let s = wb.remote_fs.lock().unwrap();
