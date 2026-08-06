@@ -9,6 +9,10 @@
 
 use std::path::PathBuf;
 
+pub use stacio_core::domain::device_metrics::{
+    DeviceCpuSample, DeviceDiskSample, DeviceMemorySample, DeviceMetricsSnapshot,
+    DeviceNetworkSample, DeviceSystemInfo,
+};
 pub use stacio_core::domain::files::{RemoteFileEntry, RemoteFileKind};
 pub use stacio_core::domain::macro_recording::MacroStep;
 pub use stacio_core::domain::multiexec::{MultiExecError, MultiExecTarget};
@@ -351,6 +355,24 @@ impl CoreHandle {
     /// 列出广播审计记录。
     pub fn list_broadcast_audits(&self, limit: u32) -> Result<Vec<BroadcastAuditRecord>, SshRuntimeError> {
         stacio_core::list_broadcast_audit_records(self.db_str(), limit)
+    }
+
+    // -----------------------------------------------------------------------
+    // 设备指标（P4-15，功能清单 6.1，License: advancedMetrics）
+    // -----------------------------------------------------------------------
+
+    /// 探测远程设备指标（经 SSH 运行探测命令）。
+    pub fn probe_device_metrics(
+        &self,
+        config: SshConnectionConfig,
+        secret: SshAuthSecret,
+        expected_fingerprint_sha256: &str,
+    ) -> Result<DeviceMetricsSnapshot, SshRuntimeError> {
+        stacio_core::probe_live_device_metrics(
+            config,
+            secret,
+            expected_fingerprint_sha256.to_owned(),
+        )
     }
 
     fn db_str(&self) -> String {
