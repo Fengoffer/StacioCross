@@ -7,9 +7,17 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use stacio_core_bridge::{
-    CoreHandle, HostKeyTrustDecision, RemoteFileEntry, ScpDirection, ScpTransferJob,
-    SshAuthMethod, SshAuthSecret, SshConnectionConfig, SshRuntimeError,
+    CoreHandle, FtpAuthSecret, FtpConnectionConfig, HostKeyTrustDecision, RemoteFileEntry,
+    ScpDirection, ScpTransferJob, SshAuthMethod, SshAuthSecret, SshConnectionConfig,
+    SshRuntimeError,
 };
+
+/// 远程协议（功能清单 3.1/3.10）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FsProtocol {
+    Sftp,
+    Ftp,
+}
 
 // ---------------------------------------------------------------------------
 // 本地浏览器
@@ -99,6 +107,8 @@ pub enum RemoteFsPhase {
 }
 
 pub struct RemoteFsState {
+    /// 协议（SFTP / FTP）。
+    pub protocol: FsProtocol,
     pub host: String,
     pub port: u16,
     pub username: String,
@@ -111,6 +121,8 @@ pub struct RemoteFsState {
     pub entries: Vec<RemoteFileEntry>,
     /// 进行中 / 已完成的传输（P4-5）。
     pub transfers: Vec<TransferEntry>,
+    /// 传输冲突策略（功能清单 3.6）：ask / keepBoth / overwrite / rename / skip。
+    pub conflict_policy: String,
 }
 
 /// 一条传输记录（UI 队列展示 + 进度轮询）。
@@ -138,6 +150,7 @@ impl TransferEntry {
 impl RemoteFsState {
     pub fn new() -> Self {
         Self {
+            protocol: FsProtocol::Sftp,
             host: String::new(),
             port: 22,
             username: String::new(),
@@ -148,6 +161,7 @@ impl RemoteFsState {
             cwd: "/".to_owned(),
             entries: Vec::new(),
             transfers: Vec::new(),
+            conflict_policy: "ask".to_owned(),
         }
     }
 
@@ -186,15 +200,20 @@ impl Default for RemoteFsState {
     }
 }
 
-/// 在后台线程开始连接：探测密钥 + Reject 决策探针。
+/// 在后台线程开始连接：SFTP 探测密钥 + Reject 决策探针；FTP 直接连接（无 host key）。
 pub fn begin_connect(state: &Arc<Mutex<RemoteFsState>>) {
     let handle = CoreHandle::new();
     let st = state.clone();
     std::thread::spawn(move || {
-        let (config, _secret) = {
+        let (config, _secret, protocol) = {
             let s = st.lock().unwrap();
-            (s.config(), s.secret())
+            (s.config(), s.secret(), s.protocol)
         };
+        // FTP：无 host key，直接就绪。
+        if protocol == FsProtocol::Ftp {
+            finish_connect(&st, String::new());
+            return;
+        }
         let observed = match handle.probe_host_key(config.clone()) {
             Ok(k) => k,
             Err(e) => {
@@ -274,21 +293,36 @@ fn finish_connect(state: &Arc<Mutex<RemoteFsState>>, fingerprint: String) {
     list_dir(&st, fingerprint, "/".to_owned());
 }
 
-/// 后台列出远程目录。
+/// 后台列出远程目录（按协议分支）。
 pub fn list_dir(state: &Arc<Mutex<RemoteFsState>>, fingerprint: String, path: String) {
     let handle = CoreHandle::new();
     let st = state.clone();
     std::thread::spawn(move || {
-        let (config, secret) = {
+        let (config, secret, protocol) = {
             let s = st.lock().unwrap();
-            (s.config(), s.secret())
+            (s.config(), s.secret(), s.protocol)
         };
         let Some(secret) = secret else {
             st.lock().unwrap().phase = RemoteFsPhase::Failed("未提供认证信息".to_owned());
             return;
         };
         st.lock().unwrap().phase = RemoteFsPhase::Busy(format!("列目录 {path}"));
-        match handle.list_sftp_directory(config, secret, &fingerprint, &path) {
+        let result = match protocol {
+            FsProtocol::Sftp => {
+                handle.list_sftp_directory(config, secret, &fingerprint, &path)
+            }
+            FsProtocol::Ftp => {
+                let ftp_config = FtpConnectionConfig {
+                    host: ftp_host(&config),
+                    port: config.port,
+                    username: config.username,
+                    connect_timeout_ms: 10_000,
+                };
+                let ftp_secret = ftp_secret(secret);
+                handle.list_ftp_directory(ftp_config, ftp_secret, &path)
+            }
+        };
+        match result {
             Ok(entries) => {
                 let mut s = st.lock().unwrap();
                 s.entries = entries;
@@ -301,6 +335,17 @@ pub fn list_dir(state: &Arc<Mutex<RemoteFsState>>, fingerprint: String, path: St
             }
         }
     });
+}
+
+fn ftp_host(config: &SshConnectionConfig) -> String {
+    config.host.clone()
+}
+
+fn ftp_secret(secret: SshAuthSecret) -> FtpAuthSecret {
+    match secret {
+        SshAuthSecret::Password { value } => FtpAuthSecret::Password { value },
+        _ => FtpAuthSecret::Anonymous,
+    }
 }
 
 /// 进入子目录（或返回上级）。
@@ -390,7 +435,22 @@ pub fn start_transfer(
             destination_path: remote_path,
             bytes_total,
         };
-        match CoreHandle::new().run_scp_transfer(config, secret, &fp, job) {
+        let result = {
+            let protocol = st.lock().unwrap().protocol;
+            match protocol {
+                FsProtocol::Sftp => CoreHandle::new().run_scp_transfer(config, secret, &fp, job),
+                FsProtocol::Ftp => {
+                    let ftp_config = FtpConnectionConfig {
+                        host: config.host,
+                        port: config.port,
+                        username: config.username,
+                        connect_timeout_ms: 10_000,
+                    };
+                    CoreHandle::new().run_ftp_transfer(ftp_config, ftp_secret(secret), job)
+                }
+            }
+        };
+        match result {
             Ok(progress) => {
                 let last = progress.last().cloned();
                 update_entry(&st, &job_id, |e| {
