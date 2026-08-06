@@ -167,6 +167,9 @@ struct App {
     metrics_password: String,
     metrics_snapshot: Option<stacio_core_bridge::DeviceMetricsSnapshot>,
     metrics_error: Option<String>,
+
+    // 关于窗口（功能清单 6.13）
+    about_open: bool,
 }
 
 impl App {
@@ -210,6 +213,7 @@ impl App {
             metrics_password: String::new(),
             metrics_snapshot: None,
             metrics_error: None,
+            about_open: false,
         }
     }
 
@@ -479,6 +483,9 @@ impl App {
                             self.metrics_open = true;
                         }
                     }
+                    if ui.small_button("ℹ").clicked() {
+                        self.about_open = true;
+                    }
                 });
             });
 
@@ -560,6 +567,42 @@ impl App {
         // 设备指标窗口（功能清单 6.1）。
         if self.metrics_open {
             self.show_metrics_window(ui.ctx());
+        }
+
+        // 关于窗口（功能清单 6.13）。
+        if self.about_open {
+            egui::Window::new("关于 Stacio")
+                .open(&mut self.about_open)
+                .collapsible(false)
+                .resizable(false)
+                .show(ui.ctx(), |ui| {
+                    ui.horizontal(|ui| {
+                        if let Ok(img) = image::open(format!(
+                            "{}/../../assets/icons/stacio-32.png",
+                            env!("CARGO_MANIFEST_DIR")
+                        )) {
+                            let tex = ui.ctx().load_texture(
+                                "about-logo",
+                                egui::ColorImage::from_rgba_unmultiplied(
+                                    [32, 32],
+                                    img.to_rgba8().into_raw().as_slice(),
+                                ),
+                                egui::TextureOptions::LINEAR,
+                            );
+                            ui.image((tex.id(), egui::Vec2::new(48.0, 48.0)));
+                        }
+                        ui.vertical(|ui| {
+                            ui.heading("Stacio");
+                            ui.label(format!("版本 {}", env!("CARGO_PKG_VERSION")));
+                        });
+                    });
+                    ui.separator();
+                    ui.label("跨平台 SSH / SFTP 客户端（Rust 自绘 UI）");
+                    ui.label(format!("平台：{}", std::env::consts::OS));
+                    let h = stacio_core_bridge::CoreHandle::new().health();
+                    ui.label(format!("核心：{} v{} {}", h.app, h.version, if h.ok { "正常" } else { "异常" }));
+                    ui.label(format!("设备指纹：{}", stacio_license::device_fingerprint()));
+                });
         }
 
         self.workbench = Some(wb);
