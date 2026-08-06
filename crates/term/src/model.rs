@@ -636,6 +636,64 @@ impl TerminalModel {
         // PoC 简化：始终允许重绘，由渲染层按脏区策略节流。
         true
     }
+
+    /// 在可视区域内搜索（大小写不敏感子串），返回全部匹配。
+    /// `line` 为网格原始行号（渲染器按 `point.line.0` 匹配，配合 display_offset 归一化）。
+    pub fn find_matches(&self, query: &str) -> Vec<SearchMatch> {
+        if query.is_empty() {
+            return Vec::new();
+        }
+        let q: Vec<char> = query.to_lowercase().chars().collect();
+        if q.is_empty() {
+            return Vec::new();
+        }
+        let content = self.term.renderable_content();
+        let mut lines: std::collections::BTreeMap<i32, Vec<char>> = Default::default();
+        for idx in content.display_iter {
+            lines.entry(idx.point.line.0).or_default().push(idx.cell.c);
+        }
+        let mut matches = Vec::new();
+        for (line, chars) in &lines {
+            let lower: Vec<char> = chars
+                .iter()
+                .map(|c| c.to_lowercase().next().unwrap_or(*c))
+                .collect();
+            if q.len() > lower.len() {
+                continue;
+            }
+            let mut start = 0;
+            while start + q.len() <= lower.len() {
+                if lower[start..start + q.len()] == q[..] {
+                    matches.push(SearchMatch {
+                        line: *line,
+                        start_col: start,
+                        end_col: start + q.len(),
+                    });
+                    start += 1;
+                } else {
+                    start += 1;
+                }
+            }
+        }
+        matches
+    }
+
+    /// 滚动使匹配项可见（滚动到其所在行）。
+    pub fn scroll_to_match(&mut self, m: &SearchMatch) {
+        use alacritty_terminal::index::{Column, Line, Point};
+        self.term.scroll_to_point(Point::new(Line(m.line), Column(m.start_col)));
+    }
+}
+
+/// 终端搜索匹配（显示坐标系）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SearchMatch {
+    /// 网格原始行号。
+    pub line: i32,
+    /// 起始列（含）。
+    pub start_col: usize,
+    /// 结束列（不含）。
+    pub end_col: usize,
 }
 
 #[cfg(test)]
@@ -726,5 +784,20 @@ mod tests {
         // 退出 alternate screen 恢复主屏。
         m.process_bytes(b"\x1b[?1049l");
         assert_eq!(line_text(&m, 0), "");
+    }
+
+    #[test]
+    fn find_matches_locates_substring_case_insensitive() {
+        let mut m = TerminalModel::new(TerminalSize::new(80, 24));
+        m.process_bytes(b"hello world\r\nfoo bar hello\r\n");
+        // 大小写不敏感。
+        let ms = m.find_matches("HELLO");
+        assert_eq!(ms.len(), 2, "两处 hello：{ms:?}");
+        assert!(ms.iter().any(|x| x.start_col == 0 && x.end_col == 5));
+        assert!(ms.iter().any(|x| x.start_col == 8 && x.end_col == 13));
+        // 空查询 → 无匹配。
+        assert!(m.find_matches("").is_empty());
+        // 无命中。
+        assert!(m.find_matches("zzz").is_empty());
     }
 }

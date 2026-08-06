@@ -84,6 +84,11 @@ struct App {
     // Quick Connect / 终端主题
     quick_connect: String,
     theme_idx: usize,
+
+    // 终端搜索（P4-6）
+    search_query: String,
+    search_idx: usize,
+    search_total: usize,
 }
 
 impl App {
@@ -111,6 +116,9 @@ impl App {
             peak_frame_ms: 0.0,
             quick_connect: String::new(),
             theme_idx: 0,
+            search_query: String::new(),
+            search_idx: 0,
+            search_total: 0,
         }
     }
 
@@ -256,6 +264,9 @@ impl App {
         let Some(renderer) = self.terminal_renderer.clone() else { return };
         let Some(mut wb) = self.workbench.take() else { return };
 
+        let mut search_next = false;
+        let mut search_prev = false;
+
         egui::Panel::top("stats_panel")
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
@@ -315,6 +326,25 @@ impl App {
                                 }
                             }
                         });
+                    ui.separator();
+                    // 终端搜索（功能清单 2.5 子集）。
+                    ui.label("⌕");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.search_query)
+                            .hint_text("find in terminal")
+                            .desired_width(110.0),
+                    );
+                    if ui.button("↑").clicked() {
+                        search_prev = true;
+                    }
+                    if ui.button("↓").clicked() {
+                        search_next = true;
+                    }
+                    if self.search_total > 0 {
+                        ui.label(format!("{}/{}", self.search_idx + 1, self.search_total));
+                    } else {
+                        ui.label("0/0");
+                    }
                 });
             });
 
@@ -345,6 +375,34 @@ impl App {
 
         // 会话 / 文件夹编辑对话框。
         wb.show_edit_dialogs(ui.ctx());
+
+        // 终端搜索：重算匹配 → 推给渲染器高亮；↑/↓ 滚动到当前匹配。
+        let matches = if self.search_query.is_empty() {
+            Vec::new()
+        } else if let Some(model) = wb.active_model() {
+            model.lock().unwrap().find_matches(&self.search_query)
+        } else {
+            Vec::new()
+        };
+        self.search_total = matches.len();
+        if self.search_total > 0 && self.search_idx >= self.search_total {
+            self.search_idx = 0;
+        }
+        if let Ok(mut r) = renderer.lock() {
+            r.set_search_matches(matches.clone());
+        }
+        if (search_next || search_prev) && !matches.is_empty() {
+            let n = matches.len();
+            self.search_idx = if search_next {
+                (self.search_idx + 1) % n
+            } else {
+                (self.search_idx + n - 1) % n
+            };
+            if let Some(model) = wb.active_model() {
+                let m = matches[self.search_idx];
+                model.lock().unwrap().scroll_to_match(&m);
+            }
+        }
 
         self.workbench = Some(wb);
     }
