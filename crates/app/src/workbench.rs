@@ -189,6 +189,8 @@ pub struct Workbench {
     pub session_edit: Option<SessionEditDraft>,
     /// 文件夹编辑对话框（None = 关闭）。
     pub folder_edit: Option<FolderEditDraft>,
+    /// 宏保存命名对话框（Some(name) = 弹出）。
+    pub macro_save_name: Option<String>,
 }
 
 impl Workbench {
@@ -207,6 +209,7 @@ impl Workbench {
             remote_fs: Arc::new(Mutex::new(crate::files_pane::RemoteFsState::new())),
             session_edit: None,
             folder_edit: None,
+            macro_save_name: None,
         }
     }
 
@@ -1108,9 +1111,7 @@ pub fn show_inspector(ui: &mut egui::Ui, wb: &mut Workbench) {
             ui.label("浏览器：（占位）");
         }
         3 => show_logs_pane(ui, wb),
-        4 => {
-            ui.label("宏：（占位）");
-        }
+        4 => show_macro_pane(ui, wb),
         5 => show_command_history_pane(ui, wb),
         _ => {
             ui.label("AI 助手：（占位）");
@@ -1133,6 +1134,119 @@ fn show_command_history_pane(ui: &mut egui::Ui, wb: &Workbench) {
     egui::ScrollArea::vertical().show(ui, |ui| {
         for cmd in history.iter().rev().take(100) {
             ui.label(format!("$ {cmd}"));
+        }
+    });
+}
+
+/// 宏面板（功能清单 2.21）：录制 / 列表 / 播放 / 删除。
+fn show_macro_pane(ui: &mut egui::Ui, wb: &mut Workbench) {
+    ui.heading("宏");
+    ui.add_space(4.0);
+
+    // 录制控制（作用于活动 SSH 标签）。
+    let active_ssh = match wb.tabs.get(wb.active_tab).map(|t| &t.kind) {
+        Some(TabKind::Ssh(state)) => Some(state.clone()),
+        _ => None,
+    };
+    if let Some(state) = &active_ssh {
+        let recording = state.lock().unwrap().recording;
+        if recording {
+            ui.colored_label(egui::Color32::from_rgb(230, 80, 80), "● 录制中…");
+            if ui.button("■ 停止并保存").clicked() {
+                let steps = state.lock().unwrap().toggle_recording();
+                if !steps.is_empty() {
+                    wb.macro_save_name = Some(String::new());
+                }
+            }
+        } else if ui.button("⏺ 开始录制").clicked() {
+            state.lock().unwrap().toggle_recording();
+        }
+        ui.add_space(4.0);
+    }
+
+    // 宏列表。
+    let handle = stacio_core_bridge::CoreHandle::new();
+    let macros = handle.list_macros().unwrap_or_default();
+    if macros.is_empty() {
+        ui.small("暂无宏（开始录制后在 SSH 终端输入，停止并保存）");
+    }
+    let mut delete_id: Option<String> = None;
+    let mut play_id: Option<String> = None;
+    for m in &macros {
+        ui.horizontal(|ui| {
+            ui.label(&m.name);
+            ui.weak(format!("{} 步", m.steps.len()));
+            if ui.small_button("▶ 播放").clicked() {
+                play_id = Some(m.id.clone());
+            }
+            if ui.small_button("删除").clicked() {
+                delete_id = Some(m.id.clone());
+            }
+        });
+    }
+    if let Some(id) = delete_id {
+        let _ = handle.delete_macro(&id);
+    }
+    if let Some(id) = play_id {
+        if let Some(m) = macros.iter().find(|m| m.id == id) {
+            play_macro_async(active_ssh.clone(), m);
+        }
+    }
+
+    // 命名对话框。
+    let mut save_name: Option<String> = None;
+    if let Some(name) = &mut wb.macro_save_name {
+        let mut cancel = false;
+        egui::Window::new("保存宏")
+            .collapsible(false)
+            .resizable(false)
+            .show(ui.ctx(), |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("名称");
+                    ui.text_edit_singleline(name);
+                });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.button("保存").clicked() {
+                        save_name = Some(name.clone());
+                    }
+                    if ui.button("取消").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if save_name.is_some() || cancel {
+            wb.macro_save_name = None;
+        }
+    }
+    if let Some(name) = save_name {
+        if let Some(state) = &active_ssh {
+            let steps = state.lock().unwrap().record_steps.clone();
+            if !steps.is_empty() {
+                let _ = stacio_core_bridge::CoreHandle::new().create_macro(&name, steps);
+            }
+        }
+    }
+}
+
+/// 后台播放宏（按步骤 delay 后发送到活动 SSH 运行时）。
+fn play_macro_async(
+    state: Option<Arc<Mutex<crate::ssh_tab::SshTabState>>>,
+    m: &stacio_core_bridge::TerminalMacroRecord,
+) {
+    let Some(state) = state else { return };
+    let steps = m.steps.clone();
+    std::thread::spawn(move || {
+        let runtime_id = match &state.lock().unwrap().phase {
+            crate::ssh_tab::SshPhase::Running { runtime_id } => runtime_id.clone(),
+            _ => return,
+        };
+        let handle = stacio_core_bridge::CoreHandle::new();
+        for step in steps {
+            if step.delay_ms > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(step.delay_ms as u64));
+            }
+            let _ = handle.write_input(&runtime_id, step.input.as_bytes().to_vec());
         }
     });
 }
