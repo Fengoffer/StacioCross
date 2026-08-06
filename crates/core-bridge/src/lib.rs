@@ -238,6 +238,15 @@ impl CoreHandle {
         stacio_core::close_terminal_runtime(runtime_id.to_owned())
     }
 
+    /// 设置 live shell 的 SSH keepalive 间隔（0..=600 秒，功能清单 2.15）。
+    pub fn set_keepalive_interval(
+        &self,
+        runtime_id: &str,
+        seconds: u32,
+    ) -> Result<(), TerminalRuntimeError> {
+        stacio_core::set_live_shell_keepalive_interval(runtime_id.to_owned(), seconds)
+    }
+
     fn db_str(&self) -> String {
         self.db_path.to_string_lossy().into_owned()
     }
