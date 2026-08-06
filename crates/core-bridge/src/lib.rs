@@ -13,10 +13,12 @@ pub use stacio_core::domain::files::{RemoteFileEntry, RemoteFileKind};
 pub use stacio_core::domain::scp::{
     ScpDirection, ScpResumeOptions, ScpTransferJob, ScpTransferProgress,
 };
+pub use stacio_core::domain::serial::SerialConnectionConfig;
 pub use stacio_core::domain::session::{
     QuickConnectTarget, SessionDraft, SessionError, SessionFolder, SessionRecord,
     SessionSidebarSnapshot, SessionUpdate,
 };
+pub use stacio_core::domain::telnet::TelnetConnectionConfig;
 pub use stacio_core::domain::ssh::{
     HostKeyTrustDecision, HostKeyVerification, LiveSshHostKey, SshAuthMethod, SshAuthSecret,
     SshConnectionConfig, SshRuntimeError,
@@ -184,6 +186,26 @@ impl CoreHandle {
         rows: u32,
     ) -> Result<LiveShellStatus, SshRuntimeError> {
         stacio_core::start_live_ssh_shell_runtime(config, secret, expected_fingerprint_sha256, cols, rows)
+    }
+
+    /// 启动 Telnet live shell（无 host key / 无认证）。
+    pub fn start_telnet_shell(
+        &self,
+        config: TelnetConnectionConfig,
+        cols: u32,
+        rows: u32,
+    ) -> Result<LiveShellStatus, SshRuntimeError> {
+        stacio_core::start_live_telnet_shell_runtime(config, cols, rows)
+    }
+
+    /// 启动串口 live shell（无 host key / 无认证）。
+    pub fn start_serial_shell(
+        &self,
+        config: SerialConnectionConfig,
+        cols: u32,
+        rows: u32,
+    ) -> Result<LiveShellStatus, SshRuntimeError> {
+        stacio_core::start_live_serial_shell_runtime(config, cols, rows)
     }
 
     /// 轮询 live shell 状态。

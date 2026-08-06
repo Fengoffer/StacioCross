@@ -1,21 +1,32 @@
-//! SSH 会话标签：连接状态机 + 输出泵 + 终端键位映射。
+//! 会话标签：连接状态机 + 输出泵 + 终端键位映射。
+//!
+//! 支持 SSH / Telnet / 串口（功能清单 2.1 / 6.18 / 6.19）。
 //!
 //! 流程（对应 stacio_core live shell API）：
-//!   Auth → probe_host_key → 决策探针（Reject）→
-//!     [已知且匹配 → 直接连] / [未知 → 用户确认指纹] / [变更 → 用户确认替换] →
+//! - SSH：Auth → probe_host_key → 决策探针（Reject）→
+//!   [已知且匹配 → 直接连] / [未知 → 用户确认指纹] / [变更 → 用户确认替换] →
 //!   start_live_ssh_shell_runtime → Running{runtime_id} → 输出泵喂 TerminalModel。
+//! - Telnet / Serial：无需探测与认证 → 直接 start_live_{telnet,serial}_shell_runtime。
 //!
-//! 认证：密码或 SSH Agent（私钥留后续里程碑）。
+//! SSH 认证：密码或 SSH Agent（私钥留后续里程碑）。
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use stacio_core_bridge::{
-    CoreHandle, HostKeyTrustDecision, LiveShellStatus, SshAuthMethod, SshAuthSecret,
-    SshConnectionConfig, SshRuntimeError,
+    CoreHandle, HostKeyTrustDecision, LiveShellStatus, SerialConnectionConfig, SshAuthMethod,
+    SshAuthSecret, SshConnectionConfig, SshRuntimeError, TelnetConnectionConfig,
 };
 use stacio_term::model::TerminalModel;
+
+/// 会话协议类型。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellKind {
+    Ssh,
+    Telnet,
+    Serial,
+}
 
 /// SSH 标签的阶段。
 #[derive(Debug, Clone)]
@@ -38,13 +49,18 @@ pub enum SshPhase {
     Closed,
 }
 
-/// SSH 标签状态（供工作台 UI 渲染与事件驱动）。
+/// 会话标签状态（供工作台 UI 渲染与事件驱动）。
 pub struct SshTabState {
+    /// 协议类型。
+    pub kind: ShellKind,
+    /// SSH/Telnet 的主机；Serial 的设备路径。
     pub host: String,
     pub port: u16,
     pub username: String,
     pub password: String,
     pub use_agent: bool,
+    /// Serial 波特率。
+    pub baud_rate: u32,
     pub phase: SshPhase,
     /// 已上报 core 的尺寸（避免每帧重复 record_resize）。
     pub last_report_cols: u32,
@@ -56,16 +72,31 @@ pub struct SshTabState {
 impl SshTabState {
     pub fn new(host: &str, port: u16, username: &str) -> Self {
         Self {
+            kind: ShellKind::Ssh,
             host: host.to_owned(),
             port,
             username: username.to_owned(),
             password: String::new(),
             use_agent: false,
+            baud_rate: 115_200,
             phase: SshPhase::Auth,
             last_report_cols: 0,
             last_report_rows: 0,
             poll_stop: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    pub fn new_telnet(host: &str, port: u16) -> Self {
+        let mut s = Self::new(host, port, "");
+        s.kind = ShellKind::Telnet;
+        s
+    }
+
+    pub fn new_serial(device_path: &str, baud_rate: u32) -> Self {
+        let mut s = Self::new(device_path, 0, "");
+        s.kind = ShellKind::Serial;
+        s.baud_rate = baud_rate;
+        s
     }
 
     fn config(&self) -> SshConnectionConfig {
@@ -101,15 +132,22 @@ impl SshTabState {
     }
 }
 
-/// 在后台线程开始连接：探测主机密钥 + 决策探针（Reject）。
-/// 结果分派到 ConfirmHostKey / 直接连接 / Failed。
+/// 在后台线程开始连接。
+/// SSH：探测主机密钥 + 决策探针（Reject），分派到 ConfirmHostKey / 直接连接 / Failed。
+/// Telnet / Serial：无需探测与认证，直接连接。
 pub fn begin_connect(state: &Arc<Mutex<SshTabState>>, model: Arc<Mutex<TerminalModel>>) {
     let handle = CoreHandle::new();
     let st = state.clone();
     std::thread::spawn(move || {
-        let (config, _secret) = {
+        // Telnet / Serial：直接连接。
+        if st.lock().unwrap().kind != ShellKind::Ssh {
+            do_connect(&st, model, None);
+            return;
+        }
+
+        let config = {
             let s = st.lock().unwrap();
-            (s.config(), s.secret())
+            s.config()
         };
 
         // 1) 探测主机密钥（连接即断）。
@@ -133,7 +171,7 @@ pub fn begin_connect(state: &Arc<Mutex<SshTabState>>, model: Arc<Mutex<TerminalM
         ) {
             Ok(_) => {
                 // 已知且匹配 → 直接连接。
-                do_connect(&st, model, config, fingerprint);
+                do_connect(&st, model, Some(fingerprint));
             }
             Err(SshRuntimeError::UnknownHostKey) => {
                 st.lock().unwrap().set_phase(SshPhase::ConfirmHostKey {
@@ -158,7 +196,7 @@ pub fn begin_connect(state: &Arc<Mutex<SshTabState>>, model: Arc<Mutex<TerminalM
     });
 }
 
-/// 用户确认指纹后调用：应用信任决策（TrustAndSave / TrustAndReplace）并连接。
+/// 用户确认指纹后调用（仅 SSH）：应用信任决策（TrustAndSave / TrustAndReplace）并连接。
 pub fn confirm_host_key(
     state: &Arc<Mutex<SshTabState>>,
     model: Arc<Mutex<TerminalModel>>,
@@ -191,13 +229,7 @@ pub fn confirm_host_key(
             None => HostKeyTrustDecision::TrustAndSave,
         };
         match handle.apply_host_key_decision(&host, port, raw_key, decision) {
-            Ok(_) => {
-                let config = {
-                    let s = st.lock().unwrap();
-                    s.config()
-                };
-                do_connect(&st, model, config, fingerprint);
-            }
+            Ok(_) => do_connect(&st, model, Some(fingerprint)),
             Err(e) => {
                 st.lock().unwrap().set_phase(SshPhase::Failed {
                     message: format!("主机密钥确认失败: {e}"),
@@ -207,34 +239,68 @@ pub fn confirm_host_key(
     });
 }
 
-/// 启动 SSH live shell，成功后转 Running 并启动输出泵。
+/// 启动 live shell（按协议分派），成功后转 Running 并启动输出泵。
 fn do_connect(
     state: &Arc<Mutex<SshTabState>>,
     model: Arc<Mutex<TerminalModel>>,
-    config: SshConnectionConfig,
-    expected_fingerprint: String,
+    expected_fingerprint: Option<String>,
 ) {
     let handle = CoreHandle::new();
     let st = state.clone();
-    let (secret, cols, rows) = {
-        let s = st.lock().unwrap();
-        let (cw, ch) = {
-            let m = model.lock().unwrap();
-            let sz = m.size();
-            (sz.columns as u32, sz.rows as u32)
-        };
-        (s.secret(), cw, ch)
-    };
-
-    let Some(secret) = secret else {
-        st.lock().unwrap().set_phase(SshPhase::Failed {
-            message: "未提供认证信息（密码为空且未选 Agent）".to_owned(),
-        });
-        return;
+    let (cols, rows) = {
+        let m = model.lock().unwrap();
+        let sz = m.size();
+        (sz.columns as u32, sz.rows as u32)
     };
 
     st.lock().unwrap().set_phase(SshPhase::Busy("连接中…".to_owned()));
-    match handle.start_ssh_shell(config, secret, expected_fingerprint, cols, rows) {
+
+    let outcome = {
+        let s = st.lock().unwrap();
+        match s.kind {
+            ShellKind::Ssh => {
+                let Some(secret) = s.secret() else {
+                    drop(s);
+                    st.lock().unwrap().set_phase(SshPhase::Failed {
+                        message: "未提供认证信息（密码为空且未选 Agent）".to_owned(),
+                    });
+                    return;
+                };
+                handle.start_ssh_shell(
+                    s.config(),
+                    secret,
+                    expected_fingerprint.unwrap_or_default(),
+                    cols,
+                    rows,
+                )
+            }
+            ShellKind::Telnet => handle.start_telnet_shell(
+                TelnetConnectionConfig {
+                    host: s.host.clone(),
+                    port: s.port,
+                    username: None,
+                    connect_timeout_ms: 10_000,
+                },
+                cols,
+                rows,
+            ),
+            ShellKind::Serial => handle.start_serial_shell(
+                SerialConnectionConfig {
+                    device_path: s.host.clone(),
+                    baud_rate: s.baud_rate,
+                    data_bits: 8,
+                    stop_bits: 1,
+                    parity: "none".to_owned(),
+                    flow_control: "none".to_owned(),
+                    backspace_mode: "ctrl_h".to_owned(),
+                },
+                cols,
+                rows,
+            ),
+        }
+    };
+
+    match outcome {
         Ok(LiveShellStatus { runtime_id, status, .. }) if status == "running" => {
             {
                 let mut s = st.lock().unwrap();
