@@ -16,12 +16,12 @@ use crate::terminal_view::TerminalCallback;
 
 /// Inspector 7 段（与 Mac 一致）。
 pub const INSPECTOR_SEGMENTS: [&str; 7] = [
-    "Files",
-    "Tunnels",
-    "Browser",
-    "Logs",
-    "Macros",
-    "Cmd History",
+    "文件",
+    "隧道",
+    "浏览器",
+    "日志",
+    "宏",
+    "命令历史",
     "AI",
 ];
 
@@ -481,7 +481,7 @@ fn build_folder_tree(snap: &stacio_core_bridge::SessionSidebarSnapshot) -> Vec<F
             None => {
                 let entry = by_id.entry("__ungrouped__").or_insert_with(|| FolderNode {
                     id: "__ungrouped__".to_string(),
-                    name: "Ungrouped".to_string(),
+                    name: "未分组".to_string(),
                     folders: Vec::new(),
                     sessions: Vec::new(),
                 });
@@ -545,7 +545,7 @@ fn show_folder(
                 }
                 let _ = resp
                     .clone()
-                    .on_hover_text(format!("{}:{} (double-click to open)", s.host, s.port));
+                    .on_hover_text(format!("{}:{} (双击打开)", s.host, s.port));
                 // 会话右键菜单：编辑 / 删除。
                 resp.context_menu(|ui| {
                     if ui.button("编辑…").clicked() {
@@ -559,7 +559,7 @@ fn show_folder(
                 });
             }
         });
-    // 文件夹 header 右键菜单。
+        // 文件夹 header 右键菜单。
     collapsing.header_response.context_menu(|ui| {
         if ui.button("新建会话…").clicked() {
             actions.push(SidebarAction::NewSession(Some(folder.id.clone())));
@@ -586,7 +586,7 @@ pub fn show_sidebar(ui: &mut egui::Ui, wb: &mut Workbench) -> Vec<SidebarAction>
     let mut actions = Vec::new();
 
     ui.horizontal(|ui| {
-        ui.heading("Sessions");
+        ui.heading("会话");
         if ui.small_button("＋会话").clicked() {
             actions.push(SidebarAction::NewSession(None));
         }
@@ -596,7 +596,7 @@ pub fn show_sidebar(ui: &mut egui::Ui, wb: &mut Workbench) -> Vec<SidebarAction>
     });
     ui.add(
         egui::TextEdit::singleline(&mut wb.search)
-            .hint_text("Search sessions…")
+            .hint_text("搜索会话…")
             .desired_width(f32::INFINITY),
     );
     ui.add_space(6.0);
@@ -605,7 +605,7 @@ pub fn show_sidebar(ui: &mut egui::Ui, wb: &mut Workbench) -> Vec<SidebarAction>
         // 空库提示（正式实施阶段：会话来自 stacio_core 数据库）。
         ui.add_space(12.0);
         ui.label("会话库为空");
-        ui.small(format!("数据库: {}", stacio_core_bridge::CoreHandle::new().db_path()));
+        ui.small(format!("数据库：{}", stacio_core_bridge::CoreHandle::new().db_path()));
         ui.small("点「＋会话」新建，或右键会话编辑 / 删除");
     } else {
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -890,20 +890,20 @@ pub fn show_inspector(ui: &mut egui::Ui, wb: &mut Workbench) {
     match wb.inspector_seg {
         0 => show_files_pane(ui, wb),
         1 => {
-            ui.label("Tunnels: (PoC placeholder)");
+            ui.label("隧道：（占位）");
         }
         2 => {
-            ui.label("Browser: (PoC placeholder)");
+            ui.label("浏览器：（占位）");
         }
         3 => show_logs_pane(ui, wb),
         4 => {
-            ui.label("Macros: (PoC placeholder)");
+            ui.label("宏：（占位）");
         }
         5 => {
-            ui.label("Command History: (PoC placeholder)");
+            ui.label("命令历史：（占位）");
         }
         _ => {
-            ui.label("AI Assistant: (PoC placeholder)");
+            ui.label("AI 助手：（占位）");
         }
     }
 }
@@ -939,7 +939,7 @@ fn show_files_pane(ui: &mut egui::Ui, wb: &mut Workbench) {
     // 传输队列。
     ui.add_space(6.0);
     ui.separator();
-    ui.heading("Transfers");
+    ui.heading("传输");
     let mut cancel: Option<String> = None;
     {
         let s = wb.remote_fs.lock().unwrap();
@@ -977,17 +977,17 @@ fn show_files_pane(ui: &mut egui::Ui, wb: &mut Workbench) {
 fn show_local_pane(ui: &mut egui::Ui, wb: &mut Workbench) -> Option<(String, String)> {
     // 原生文件对话框按钮。
     ui.horizontal(|ui| {
-        if ui.small_button("Open…").clicked() {
+        if ui.small_button("打开…").clicked() {
             let adapter = stacio_platform::default_adapter();
-            if let Some(path) = adapter.pick_file("Select file to upload") {
+            if let Some(path) = adapter.pick_file("选择要上传的文件") {
                 if let Some(name) = std::path::Path::new(&path).file_name() {
                     wb.uploads.push(format!("picked → {}", name.to_string_lossy()));
                 }
             }
         }
-        if ui.small_button("Save…").clicked() {
+        if ui.small_button("保存…").clicked() {
             let adapter = stacio_platform::default_adapter();
-            if let Some(path) = adapter.save_file("Save file as", "untitled.txt") {
+            if let Some(path) = adapter.save_file("另存为", "未命名.txt") {
                 if let Some(name) = std::path::Path::new(&path).file_name() {
                     wb.uploads.push(format!("saved → {}", name.to_string_lossy()));
                 }
@@ -1033,7 +1033,7 @@ fn show_local_pane(ui: &mut egui::Ui, wb: &mut Workbench) -> Option<(String, Str
                 });
             }
             resp.on_hover_text(if e.is_dir {
-                "double-click to open".to_string()
+                "双击打开".to_string()
             } else {
                 format!("{} bytes · drag onto terminal to upload", e.size)
             });
@@ -1134,7 +1134,7 @@ fn show_remote_pane(ui: &mut egui::Ui, state: &Arc<Mutex<crate::files_pane::Remo
                             });
                         }
                         resp.on_hover_text(if e.kind == RemoteFileKind::Directory {
-                            "double-click to open".to_string()
+                            "双击打开".to_string()
                         } else {
                             format!("{} bytes", e.size)
                         });
@@ -1172,9 +1172,9 @@ fn show_remote_pane(ui: &mut egui::Ui, state: &Arc<Mutex<crate::files_pane::Remo
 }
 
 fn show_logs_pane(ui: &mut egui::Ui, wb: &mut Workbench) {
-    ui.heading("Diagnostics");
+    ui.heading("诊断");
     egui::ScrollArea::vertical().show(ui, |ui| {
-        ui.label("workbench: 3-column layout active");
+        ui.label("工作台：三栏布局已激活");
         ui.label(format!("tabs: {}", wb.tabs.len()));
         ui.label(format!("uploads: {}", wb.uploads.len()));
     });

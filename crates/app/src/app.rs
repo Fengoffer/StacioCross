@@ -15,7 +15,20 @@ use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::window::{Window, WindowId};
+use winit::window::{Icon, Window, WindowId};
+
+/// 加载窗口图标（PNG → RGBA）。
+fn load_window_icon() -> Option<Icon> {
+    let candidates = [
+        std::env::var("STACIO_ICON").ok(),
+        Some(format!("{}/../../assets/icons/stacio-32.png", env!("CARGO_MANIFEST_DIR"))),
+        Some("assets/icons/stacio-32.png".to_string()),
+    ];
+    let path = candidates.into_iter().flatten().find(|p| std::path::Path::new(p).exists())?;
+    let img = image::open(&path).ok()?.to_rgba8();
+    let (w, h) = img.dimensions();
+    Icon::from_rgba(img.into_raw(), w, h).ok()
+}
 
 pub fn run() -> anyhow::Result<()> {
     env_logger::init();
@@ -123,8 +136,17 @@ impl App {
     }
 
     fn font_bytes() -> anyhow::Result<Vec<u8>> {
+        // .app bundle 内字体：Contents/Resources/fonts/。
+        let bundle_font = std::env::current_exe()
+            .ok()
+            .and_then(|exe| {
+                exe.parent()
+                    .map(|p| p.join("../Resources/fonts/JetBrainsMonoNLNerdFont-Regular.ttf"))
+            })
+            .map(|p| p.to_string_lossy().into_owned());
         let candidates = [
             std::env::var("STACIO_FONT").ok(),
+            bundle_font,
             Some(format!(
                 "{}/../../assets/fonts/JetBrainsMonoNLNerdFont-Regular.ttf",
                 env!("CARGO_MANIFEST_DIR")
@@ -142,7 +164,8 @@ impl App {
     fn init_resources(&mut self, event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
         let window = Arc::new(event_loop.create_window(
             Window::default_attributes()
-                .with_title("Stacio Terminal PoC")
+                .with_title("Stacio 终端")
+                .with_window_icon(load_window_icon())
                 .with_inner_size(LogicalSize::new(1100.0, 720.0)),
         )?);
 
@@ -270,7 +293,7 @@ impl App {
         egui::Panel::top("stats_panel")
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    ui.strong("Stacio Workbench PoC");
+                    ui.strong("Stacio 工作台");
                     ui.separator();
                     // 共享核心健康状态（stacio_core 直接依赖）。
                     let h = stacio_core_bridge::CoreHandle::new().health();
@@ -289,7 +312,7 @@ impl App {
                     }
                     ui.separator();
                     // Quick Connect：user@host[:port] → SSH 标签。
-                    ui.label("Quick");
+                    ui.label("快速连接");
                     ui.add(
                         egui::TextEdit::singleline(&mut self.quick_connect)
                             .hint_text("user@host:port")
@@ -331,7 +354,7 @@ impl App {
                     ui.label("⌕");
                     ui.add(
                         egui::TextEdit::singleline(&mut self.search_query)
-                            .hint_text("find in terminal")
+                            .hint_text("在终端中查找")
                             .desired_width(110.0),
                     );
                     if ui.button("↑").clicked() {
