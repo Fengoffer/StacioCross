@@ -31,8 +31,7 @@ fn load_window_icon() -> Option<Icon> {
 }
 
 /// 加载 License 快照：debug 构建自动解锁全部功能（便于开发门控功能）；
-/// 也可用 `STACIO_LICENSE_FILE` 导入签名授权文件。
-fn load_license() -> stacio_license::LicenseSnapshot {
+/// 也可用 `STACIO_LICENSE_FILE` 导入签名授权文件。fn load_license() -> stacio_license::LicenseSnapshot {
     #[cfg(debug_assertions)]
     if std::env::var("STACIO_LICENSE_DEV").unwrap_or_default() == "0" {
         // 显式关闭 dev 解锁，走正式导入路径。
@@ -45,6 +44,33 @@ fn load_license() -> stacio_license::LicenseSnapshot {
         }
     }
     stacio_license::load()
+}
+
+/// 设备指标探测结果全局 holder（后台线程写，UI 每帧取走）。
+fn metrics_put_result(result: Result<stacio_core_bridge::DeviceMetricsSnapshot, String>) {
+    static RESULT: std::sync::OnceLock<
+        std::sync::Mutex<Option<Result<stacio_core_bridge::DeviceMetricsSnapshot, String>>>,
+    > = std::sync::OnceLock::new();
+    *RESULT.get_or_init(|| std::sync::Mutex::new(None)).lock().unwrap() = Some(result);
+}
+
+fn metrics_take_result() -> Option<Result<stacio_core_bridge::DeviceMetricsSnapshot, String>> {
+    static RESULT: std::sync::OnceLock<
+        std::sync::Mutex<Option<Result<stacio_core_bridge::DeviceMetricsSnapshot, String>>>,
+    > = std::sync::OnceLock::new();
+    RESULT.get_or_init(|| std::sync::Mutex::new(None)).lock().unwrap().take()
+}
+
+/// 人类可读字节数。
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut v = bytes as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i < UNITS.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    format!("{v:.1} {}", UNITS[i])
 }
 
 pub fn run() -> anyhow::Result<()> {
@@ -131,6 +157,15 @@ struct App {
     multiexec_open: bool,
     multiexec_input: String,
     multiexec_selected: std::collections::HashSet<String>,
+
+    // 设备指标（P4-15）：窗口开关 + 连接表单 + 探测结果
+    metrics_open: bool,
+    metrics_host: String,
+    metrics_port: u16,
+    metrics_user: String,
+    metrics_password: String,
+    metrics_snapshot: Option<stacio_core_bridge::DeviceMetricsSnapshot>,
+    metrics_error: Option<String>,
 }
 
 impl App {
@@ -167,6 +202,13 @@ impl App {
             multiexec_open: false,
             multiexec_input: String::new(),
             multiexec_selected: std::collections::HashSet::new(),
+            metrics_open: false,
+            metrics_host: String::new(),
+            metrics_port: 22,
+            metrics_user: String::new(),
+            metrics_password: String::new(),
+            metrics_snapshot: None,
+            metrics_error: None,
         }
     }
 
@@ -430,6 +472,12 @@ impl App {
                             self.multiexec_open = true;
                         }
                     }
+                    // 设备指标（功能清单 6.1，License: advancedMetrics）。
+                    if self.license.is_enabled(stacio_license::Feature::AdvancedMetrics) {
+                        if ui.small_button("📊 设备指标").clicked() {
+                            self.metrics_open = true;
+                        }
+                    }
                 });
             });
 
@@ -508,7 +556,141 @@ impl App {
             self.show_multiexec_window(ui.ctx(), &wb);
         }
 
+        // 设备指标窗口（功能清单 6.1）。
+        if self.metrics_open {
+            self.show_metrics_window(ui.ctx());
+        }
+
         self.workbench = Some(wb);
+    }
+
+    /// 设备指标窗口：连接表单 → 探测 → 展示 CPU/内存/磁盘/网络。
+    fn show_metrics_window(&mut self, ctx: &egui::Context) {
+        let mut probe = false;
+        egui::Window::new("设备指标")
+            .open(&mut self.metrics_open)
+            .default_size(egui::Vec2::new(460.0, 420.0))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("主机");
+                    ui.text_edit_singleline(&mut self.metrics_host);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("端口");
+                    ui.add(egui::DragValue::new(&mut self.metrics_port).range(1..=65535));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("用户");
+                    ui.text_edit_singleline(&mut self.metrics_user);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("密码");
+                    ui.add(egui::TextEdit::singleline(&mut self.metrics_password).password(true));
+                });
+                if ui.button("探测").clicked() {
+                    probe = true;
+                }
+                ui.separator();
+                if let Some(err) = &self.metrics_error {
+                    ui.colored_label(egui::Color32::from_rgb(220, 90, 90), err);
+                }
+                if let Some(snap) = &self.metrics_snapshot {
+                    ui.label(format!(
+                        "{} @ {} ({}) · {}",
+                        snap.system.current_user,
+                        snap.system.hostname,
+                        snap.system.operating_system,
+                        snap.system.kernel_release
+                    ));
+                    ui.label(format!("CPU 型号：{}", snap.system.cpu_model));
+                    let cpu = snap.cpu;
+                    let cpu_pct = if cpu.total_ticks > 0 {
+                        100.0 - (cpu.idle_ticks as f64 / cpu.total_ticks as f64 * 100.0)
+                    } else {
+                        0.0
+                    };
+                    ui.label(format!("CPU 使用率：{cpu_pct:.1}%（{} 核）", snap.cpu_cores.len()));
+                    ui.add(egui::ProgressBar::new((cpu_pct / 100.0) as f32).desired_width(300.0));
+                    let mem = &snap.memory;
+                    if mem.total_bytes > 0 {
+                        let used = mem.total_bytes - mem.available_bytes;
+                        let used_pct = used as f32 / mem.total_bytes as f32;
+                        ui.label(format!(
+                            "内存：{} / {}（{:.0}%）",
+                            human_bytes(used),
+                            human_bytes(mem.total_bytes),
+                            used_pct * 100.0
+                        ));
+                        ui.add(egui::ProgressBar::new(used_pct).desired_width(300.0));
+                    }
+                    for d in &snap.disks {
+                        if d.total_bytes > 0 {
+                            let pct = d.used_bytes as f32 / d.total_bytes as f32;
+                            ui.label(format!(
+                                "磁盘 {}：{} / {}",
+                                d.mount_path,
+                                human_bytes(d.used_bytes),
+                                human_bytes(d.total_bytes)
+                            ));
+                            ui.add(egui::ProgressBar::new(pct).desired_width(300.0));
+                        }
+                    }
+                    if !snap.network_interfaces.is_empty() {
+                        ui.separator();
+                        for n in &snap.network_interfaces {
+                            ui.small(format!(
+                                "{}: ↓{} ↑{}",
+                                n.name,
+                                human_bytes(n.receive_bytes),
+                                human_bytes(n.transmit_bytes)
+                            ));
+                        }
+                    }
+                } else {
+                    ui.small("输入主机信息后点击「探测」");
+                }
+            });
+        // 探测结果（线程写入全局 holder，UI 取走）。
+        if let Some(result) = metrics_take_result() {
+            match result {
+                Ok(snap) => {
+                    self.metrics_snapshot = Some(snap);
+                    self.metrics_error = None;
+                }
+                Err(e) => {
+                    self.metrics_error = Some(e);
+                    self.metrics_snapshot = None;
+                }
+            }
+        }
+        if probe {
+            self.metrics_snapshot = None;
+            self.metrics_error = None;
+            let (host, port, user, pass) = (
+                self.metrics_host.clone(),
+                self.metrics_port,
+                self.metrics_user.clone(),
+                self.metrics_password.clone(),
+            );
+            std::thread::spawn(move || {
+                let config = stacio_core_bridge::SshConnectionConfig {
+                    host,
+                    port,
+                    username: user,
+                    auth_method: stacio_core_bridge::SshAuthMethod::Password {
+                        credential_ref: String::new(),
+                    },
+                    connect_timeout_ms: 10_000,
+                };
+                let secret = stacio_core_bridge::SshAuthSecret::Password { value: pass };
+                let result = stacio_core_bridge::CoreHandle::new().probe_device_metrics(
+                    config,
+                    secret,
+                    "",
+                );
+                metrics_put_result(result.map_err(|e| e.to_string()));
+            });
+        }
     }
 
     /// MultiExec 窗口：目标多选 + 广播输入 + 审计记录。
