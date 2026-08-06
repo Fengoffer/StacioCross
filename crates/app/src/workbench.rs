@@ -8,6 +8,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use stacio_core_bridge::ScpDirection;
 use stacio_term::model::TerminalModel;
 use stacio_term::renderer::TerminalRenderer;
 
@@ -881,26 +882,71 @@ pub fn show_inspector(ui: &mut egui::Ui, wb: &mut Workbench) {
 
 /// Files 面板：本地文件列表，可拖到终端上传。
 /// "Open…" / "Save…" 调用平台原生文件对话框（PlatformAdapter::FileDialog）。
-/// Files 面板：本地 / 远程双栏浏览（功能清单 3.1/3.2 子集）。
+/// Files 面板：本地 / 远程双栏浏览（功能清单 3.1/3.2 子集）+ 传输队列（3.4）。
 fn show_files_pane(ui: &mut egui::Ui, wb: &mut Workbench) {
-    ui.columns(2, |cols| {
+    // 轮询传输进度。
+    crate::files_pane::poll_transfers(&wb.remote_fs);
+
+    let upload = ui.columns(2, |cols| {
         // 本地栏。
         cols[0].heading("本地");
-        show_local_pane(&mut cols[0], wb);
+        let up = show_local_pane(&mut cols[0], wb);
         // 远程栏。
         cols[1].heading("远程");
-        show_remote_pane(&mut cols[1], &wb.remote_fs);
+        let dl = show_remote_pane(&mut cols[1], &wb.remote_fs);
+        (up, dl)
     });
+
+    // 上传：右键本地文件 → 远程当前目录。
+    if let Some((local, remote)) = upload.0 {
+        crate::files_pane::start_transfer(&wb.remote_fs, ScpDirection::Upload, local, remote);
+    }
+    // 下载：右键远程文件 → 本地当前目录。
+    if let Some(remote) = upload.1 {
+        let name = remote.rsplit('/').next().unwrap_or("file").to_owned();
+        let local = wb.local_browser.cwd.join(name).to_string_lossy().into_owned();
+        crate::files_pane::start_transfer(&wb.remote_fs, ScpDirection::Download, local, remote);
+    }
+
+    // 传输队列。
     ui.add_space(6.0);
     ui.separator();
-    ui.heading("Recent uploads");
-    for u in wb.uploads.iter().rev().take(5) {
-        ui.label(format!("> {u}"));
+    ui.heading("Transfers");
+    let mut cancel: Option<String> = None;
+    {
+        let s = wb.remote_fs.lock().unwrap();
+        for t in &s.transfers {
+            ui.horizontal(|ui| {
+                ui.label(&t.direction);
+                ui.label(&t.name);
+                match t.status.as_str() {
+                    "running" => {
+                        ui.add(egui::ProgressBar::new(t.percent()).desired_width(80.0));
+                        ui.label(format!("{}/{}", t.bytes_done, t.bytes_total));
+                        if ui.small_button("取消").clicked() {
+                            cancel = Some(t.job_id.clone());
+                        }
+                    }
+                    "failed" => {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(220, 90, 90),
+                            format!("失败: {}", t.error.as_deref().unwrap_or("")),
+                        );
+                    }
+                    _ => {
+                        ui.label("✓ 完成");
+                    }
+                }
+            });
+        }
+    }
+    if let Some(job) = cancel {
+        let _ = stacio_core_bridge::CoreHandle::new().cancel_scp_transfer(&job);
     }
 }
 
-/// 本地真实文件浏览器（std::fs）。
-fn show_local_pane(ui: &mut egui::Ui, wb: &mut Workbench) {
+/// 本地真实文件浏览器（std::fs）。返回 (本地路径, 远程路径) 上传动作。
+fn show_local_pane(ui: &mut egui::Ui, wb: &mut Workbench) -> Option<(String, String)> {
     // 原生文件对话框按钮。
     ui.horizontal(|ui| {
         if ui.small_button("Open…").clicked() {
@@ -923,12 +969,14 @@ fn show_local_pane(ui: &mut egui::Ui, wb: &mut Workbench) {
     ui.small(wb.local_browser.cwd.display().to_string());
     ui.separator();
 
+    let mut upload: Option<(String, String)> = None;
     egui::ScrollArea::vertical().show(ui, |ui| {
         // 返回上级。
         if ui.small_button("⬆ ..").clicked() {
             wb.local_browser.go_up();
         }
         let mut enter = None;
+        let mut to_upload = None;
         for e in &wb.local_browser.entries {
             let prefix = if e.is_dir { "📁" } else { "📄" };
             let resp = ui.add(egui::Label::new(format!("{prefix} {}", e.name)).selectable(true));
@@ -937,6 +985,24 @@ fn show_local_pane(ui: &mut egui::Ui, wb: &mut Workbench) {
             }
             if resp.drag_started() {
                 egui::DragAndDrop::set_payload(ui.ctx(), FilePayload { name: e.name.clone() });
+            }
+            if !e.is_dir {
+                let entry_name = e.name.clone();
+                resp.context_menu(|ui| {
+                    if ui.button("上传到远程…").clicked() {
+                        let remote_ready = wb.remote_fs.lock().unwrap().fingerprint.is_some();
+                        if remote_ready {
+                            let local = wb.local_browser.cwd.join(&entry_name);
+                            let remote = {
+                                let s = wb.remote_fs.lock().unwrap();
+                                let sep = if s.cwd.ends_with('/') { "" } else { "/" };
+                                format!("{}{}{}", s.cwd, sep, entry_name)
+                            };
+                            to_upload = Some((local.to_string_lossy().into_owned(), remote));
+                        }
+                        ui.close();
+                    }
+                });
             }
             resp.on_hover_text(if e.is_dir {
                 "double-click to open".to_string()
@@ -947,11 +1013,13 @@ fn show_local_pane(ui: &mut egui::Ui, wb: &mut Workbench) {
         if let Some(name) = enter {
             wb.local_browser.enter(&name);
         }
+        upload = to_upload;
     });
+    upload
 }
 
-/// SFTP 远程浏览：连接表单 → 指纹确认 → 列目录 / 导航。
-fn show_remote_pane(ui: &mut egui::Ui, state: &Arc<Mutex<crate::files_pane::RemoteFsState>>) {
+/// SFTP 远程浏览：连接表单 → 指纹确认 → 列目录 / 导航。返回要下载的远程文件路径。
+fn show_remote_pane(ui: &mut egui::Ui, state: &Arc<Mutex<crate::files_pane::RemoteFsState>>) -> Option<String> {
     use crate::files_pane::{begin_connect, confirm_host_key, navigate, RemoteFsPhase};
     use stacio_core_bridge::RemoteFileKind;
 
@@ -960,6 +1028,7 @@ fn show_remote_pane(ui: &mut egui::Ui, state: &Arc<Mutex<crate::files_pane::Remo
     let mut cancel_confirm = false;
     let mut nav: Option<String> = None;
     let mut back = false;
+    let mut download: Option<String> = None;
 
     {
         let mut st = state.lock().unwrap();
@@ -1027,6 +1096,15 @@ fn show_remote_pane(ui: &mut egui::Ui, state: &Arc<Mutex<crate::files_pane::Remo
                         if resp.double_clicked() && e.kind == RemoteFileKind::Directory {
                             nav = Some(e.path.clone());
                         }
+                        if e.kind == RemoteFileKind::File {
+                            let path = e.path.clone();
+                            resp.context_menu(|ui| {
+                                if ui.button("下载到本地…").clicked() {
+                                    download = Some(path);
+                                    ui.close();
+                                }
+                            });
+                        }
                         resp.on_hover_text(if e.kind == RemoteFileKind::Directory {
                             "double-click to open".to_string()
                         } else {
@@ -1062,6 +1140,7 @@ fn show_remote_pane(ui: &mut egui::Ui, state: &Arc<Mutex<crate::files_pane::Remo
     if back {
         state.lock().unwrap().phase = RemoteFsPhase::Auth;
     }
+    download
 }
 
 fn show_logs_pane(ui: &mut egui::Ui, wb: &mut Workbench) {

@@ -10,6 +10,9 @@
 use std::path::PathBuf;
 
 pub use stacio_core::domain::files::{RemoteFileEntry, RemoteFileKind};
+pub use stacio_core::domain::scp::{
+    ScpDirection, ScpResumeOptions, ScpTransferJob, ScpTransferProgress,
+};
 pub use stacio_core::domain::session::{
     QuickConnectTarget, SessionDraft, SessionError, SessionFolder, SessionRecord,
     SessionSidebarSnapshot, SessionUpdate,
@@ -107,6 +110,39 @@ impl CoreHandle {
             expected_fingerprint_sha256.to_owned(),
             remote_path.to_owned(),
         )
+    }
+
+    // -----------------------------------------------------------------------
+    // 文件传输（P4-5：SCP 上传/下载，长任务模式）
+    // -----------------------------------------------------------------------
+
+    /// 启动 SCP 传输（阻塞执行，进度推入全局 registry；UI 另线程轮询 take_scp_progress）。
+    pub fn run_scp_transfer(
+        &self,
+        config: SshConnectionConfig,
+        secret: SshAuthSecret,
+        expected_fingerprint_sha256: &str,
+        job: ScpTransferJob,
+    ) -> Result<Vec<ScpTransferProgress>, SshRuntimeError> {
+        stacio_core::run_live_scp_transfer(
+            config,
+            secret,
+            expected_fingerprint_sha256.to_owned(),
+            job,
+        )
+    }
+
+    /// 取出某 job 的进度批次（取走即清空）。
+    pub fn take_scp_progress(
+        &self,
+        job_id: &str,
+    ) -> Result<Vec<ScpTransferProgress>, SshRuntimeError> {
+        stacio_core::take_live_scp_transfer_progress_batch(job_id.to_owned())
+    }
+
+    /// 取消传输。
+    pub fn cancel_scp_transfer(&self, job_id: &str) -> Result<bool, SshRuntimeError> {
+        stacio_core::cancel_live_scp_transfer(job_id.to_owned())
     }
 
     // -----------------------------------------------------------------------
