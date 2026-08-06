@@ -64,6 +64,12 @@ pub struct SshTabState {
     pub phase: SshPhase,
     /// 待确认的多行粘贴内容（功能清单 2.18）。
     pub pending_paste: Option<String>,
+    /// SSH keepalive 间隔（秒，0=关闭，功能清单 2.15）。
+    pub keepalive_seconds: u32,
+    /// 命令历史（功能清单 2.20）：按用户输入的行记录（含时间近似顺序）。
+    pub command_history: Vec<String>,
+    /// 当前行缓冲（命令历史跟踪用）。
+    pub current_line: String,
     /// 已上报 core 的尺寸（避免每帧重复 record_resize）。
     pub last_report_cols: u32,
     pub last_report_rows: u32,
@@ -83,6 +89,9 @@ impl SshTabState {
             baud_rate: 115_200,
             phase: SshPhase::Auth,
             pending_paste: None,
+            keepalive_seconds: 30,
+            command_history: Vec::new(),
+            current_line: String::new(),
             last_report_cols: 0,
             last_report_rows: 0,
             poll_stop: Arc::new(AtomicBool::new(false)),
@@ -132,6 +141,29 @@ impl SshTabState {
 
     fn set_phase(&mut self, phase: SshPhase) {
         self.phase = phase;
+    }
+
+    /// 跟踪输入行 → 命令历史（功能清单 2.20）。
+    pub fn feed_input(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            match b {
+                b'\r' | b'\n' => {
+                    let cmd = self.current_line.trim().to_string();
+                    if !cmd.is_empty() {
+                        self.command_history.push(cmd);
+                        if self.command_history.len() > 200 {
+                            self.command_history.remove(0);
+                        }
+                    }
+                    self.current_line.clear();
+                }
+                0x08 | 0x7f => {
+                    self.current_line.pop();
+                }
+                b if b.is_ascii_control() => {}
+                _ => self.current_line.push(b as char),
+            }
+        }
     }
 }
 
@@ -305,7 +337,7 @@ fn do_connect(
 
     match outcome {
         Ok(LiveShellStatus { runtime_id, status, .. }) if status == "running" => {
-            {
+            let keepalive = {
                 let mut s = st.lock().unwrap();
                 s.phase = SshPhase::Running {
                     runtime_id: runtime_id.clone(),
@@ -313,6 +345,11 @@ fn do_connect(
                 s.last_report_cols = cols;
                 s.last_report_rows = rows;
                 s.poll_stop = Arc::new(AtomicBool::new(false));
+                s.keepalive_seconds
+            };
+            // 应用 SSH keepalive 间隔（功能清单 2.15）。
+            if keepalive > 0 {
+                let _ = handle.set_keepalive_interval(&runtime_id, keepalive);
             }
             spawn_output_pump(&st, model, runtime_id);
         }

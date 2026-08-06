@@ -946,6 +946,11 @@ fn render_ssh_phase_ui(
                         ui.add(egui::TextEdit::singleline(&mut st.password).password(true));
                     });
                     ui.checkbox(&mut st.use_agent, "使用 SSH Agent");
+                    ui.horizontal(|ui| {
+                        ui.label("Keepalive");
+                        ui.add(egui::DragValue::new(&mut st.keepalive_seconds).range(0..=600));
+                        ui.weak("秒");
+                    });
                     ui.add_space(6.0);
                 }
                 ShellKind::Telnet => {
@@ -1075,6 +1080,8 @@ fn capture_terminal_input(
     }
 
     if !bytes.is_empty() {
+        // 命令历史跟踪（功能清单 2.20）。
+        state.lock().unwrap().feed_input(&bytes);
         let _ = stacio_core_bridge::CoreHandle::new().write_input(runtime_id, bytes);
     }
 }
@@ -1104,13 +1111,30 @@ pub fn show_inspector(ui: &mut egui::Ui, wb: &mut Workbench) {
         4 => {
             ui.label("宏：（占位）");
         }
-        5 => {
-            ui.label("命令历史：（占位）");
-        }
+        5 => show_command_history_pane(ui, wb),
         _ => {
             ui.label("AI 助手：（占位）");
         }
     }
+}
+
+/// 命令历史面板（功能清单 2.20）：展示活动 SSH 标签已输入的命令。
+fn show_command_history_pane(ui: &mut egui::Ui, wb: &Workbench) {
+    ui.heading("命令历史");
+    ui.add_space(4.0);
+    let history = match wb.tabs.get(wb.active_tab).map(|t| &t.kind) {
+        Some(TabKind::Ssh(state)) => state.lock().unwrap().command_history.clone(),
+        _ => Vec::new(),
+    };
+    if history.is_empty() {
+        ui.small("暂无命令（在 SSH 终端输入命令后显示）");
+        return;
+    }
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        for cmd in history.iter().rev().take(100) {
+            ui.label(format!("$ {cmd}"));
+        }
+    });
 }
 
 /// Files 面板：本地文件列表，可拖到终端上传。
