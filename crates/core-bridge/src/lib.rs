@@ -20,7 +20,11 @@ pub use stacio_core::domain::session::{
     SessionSidebarSnapshot, SessionUpdate,
 };
 pub use stacio_core::domain::telnet::TelnetConnectionConfig;
+pub use stacio_core::domain::tunnel::{
+    TunnelError, TunnelKind, TunnelProfile, TunnelProfileRecord, TunnelState,
+};
 pub use stacio_core::infrastructure::terminal_macro_repository::TerminalMacroRecord;
+pub use stacio_core::services::tunnel_service::TunnelRuntimeStatus;
 pub use stacio_core::domain::ssh::{
     HostKeyTrustDecision, HostKeyVerification, LiveSshHostKey, SshAuthMethod, SshAuthSecret,
     SshConnectionConfig, SshRuntimeError,
@@ -266,6 +270,55 @@ impl CoreHandle {
     /// 删除宏。
     pub fn delete_macro(&self, macro_id: &str) -> Result<(), SshRuntimeError> {
         stacio_core::delete_terminal_macro(self.db_str(), macro_id.to_owned())
+    }
+
+    // -----------------------------------------------------------------------
+    // SSH 隧道（P4-13，功能清单 4.x，License: sshTunnel）
+    // -----------------------------------------------------------------------
+
+    /// 列出隧道配置（按会话过滤，None = 全部）。
+    pub fn list_tunnel_profiles(&self, session_id: Option<&str>) -> Result<Vec<TunnelProfile>, SshRuntimeError> {
+        stacio_core::list_tunnel_profiles(self.db_str(), session_id.map(str::to_owned))
+    }
+
+    /// 列出隧道配置记录（含绑定会话信息）。
+    pub fn list_tunnel_profile_records(&self) -> Result<Vec<TunnelProfileRecord>, SshRuntimeError> {
+        stacio_core::list_tunnel_profile_records(self.db_str(), None)
+    }
+
+    /// 保存隧道配置（新建/更新；session_id 用于绑定会话）。
+    pub fn save_tunnel_profile(
+        &self,
+        session_id: Option<&str>,
+        profile: TunnelProfile,
+    ) -> Result<(), SshRuntimeError> {
+        stacio_core::save_tunnel_profile(self.db_str(), session_id.map(str::to_owned), profile)
+    }
+
+    /// 启动隧道（需 SSH 连接配置 + 密钥 + 指纹）。
+    pub fn start_tunnel(
+        &self,
+        config: SshConnectionConfig,
+        secret: SshAuthSecret,
+        expected_fingerprint_sha256: &str,
+        profile: TunnelProfile,
+    ) -> Result<TunnelRuntimeStatus, SshRuntimeError> {
+        stacio_core::start_live_local_tunnel_runtime(
+            config,
+            secret,
+            expected_fingerprint_sha256.to_owned(),
+            profile,
+        )
+    }
+
+    /// 轮询隧道状态。
+    pub fn poll_tunnel(&self, profile_id: &str) -> Result<TunnelRuntimeStatus, TunnelError> {
+        stacio_core::poll_live_tunnel_runtime(profile_id.to_owned())
+    }
+
+    /// 关闭隧道。
+    pub fn close_tunnel(&self, profile_id: &str) -> Result<TunnelRuntimeStatus, TunnelError> {
+        stacio_core::close_live_tunnel_runtime(profile_id.to_owned())
     }
 
     fn db_str(&self) -> String {

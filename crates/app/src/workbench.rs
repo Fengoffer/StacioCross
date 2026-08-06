@@ -185,6 +185,8 @@ pub struct Workbench {
     pub local_browser: crate::files_pane::LocalBrowser,
     /// Files 面板：SFTP 远程浏览。
     pub remote_fs: Arc<Mutex<crate::files_pane::RemoteFsState>>,
+    /// 隧道面板状态（功能清单 4.x）。
+    pub tunnel_state: Arc<Mutex<crate::tunnel_pane::TunnelPaneState>>,
     /// 会话编辑对话框（None = 关闭）。
     pub session_edit: Option<SessionEditDraft>,
     /// 文件夹编辑对话框（None = 关闭）。
@@ -207,6 +209,7 @@ impl Workbench {
             uploads: Vec::new(),
             local_browser: crate::files_pane::LocalBrowser::new(),
             remote_fs: Arc::new(Mutex::new(crate::files_pane::RemoteFsState::new())),
+            tunnel_state: Arc::new(Mutex::new(crate::tunnel_pane::TunnelPaneState::new())),
             session_edit: None,
             folder_edit: None,
             macro_save_name: None,
@@ -1089,8 +1092,8 @@ fn capture_terminal_input(
     }
 }
 
-/// 渲染 Inspector：7 段 + 内容。
-pub fn show_inspector(ui: &mut egui::Ui, wb: &mut Workbench) {
+/// 渲染 Inspector：7 段 + 内容。license 用于门控授权功能。
+pub fn show_inspector(ui: &mut egui::Ui, wb: &mut Workbench, license: &stacio_license::LicenseSnapshot) {
     // segmented control（7 段，窄面板下换行）。
     ui.horizontal_wrapped(|ui| {
         for (i, seg) in INSPECTOR_SEGMENTS.iter().enumerate() {
@@ -1104,9 +1107,7 @@ pub fn show_inspector(ui: &mut egui::Ui, wb: &mut Workbench) {
 
     match wb.inspector_seg {
         0 => show_files_pane(ui, wb),
-        1 => {
-            ui.label("隧道：（占位）");
-        }
+        1 => show_tunnel_pane(ui, wb, license),
         2 => {
             ui.label("浏览器：（占位）");
         }
@@ -1114,8 +1115,192 @@ pub fn show_inspector(ui: &mut egui::Ui, wb: &mut Workbench) {
         4 => show_macro_pane(ui, wb),
         5 => show_command_history_pane(ui, wb),
         _ => {
-            ui.label("AI 助手：（占位）");
+            if license.is_enabled(stacio_license::Feature::AiAgent) {
+                ui.label("AI 助手：尚未实现");
+            } else {
+                show_license_gate(ui, "AI 助手");
+            }
         }
+    }
+}
+
+/// License 门控提示（未授权功能的占位）。
+fn show_license_gate(ui: &mut egui::Ui, feature: &str) {
+    ui.add_space(12.0);
+    ui.label(format!("🔒 {feature} 为付费功能"));
+    ui.small("在「🔑 授权」窗口导入授权文件后可用。");
+}
+
+/// 隧道面板（功能清单 4.x，License: sshTunnel）。
+fn show_tunnel_pane(ui: &mut egui::Ui, wb: &mut Workbench, license: &stacio_license::LicenseSnapshot) {
+    if !license.is_enabled(stacio_license::Feature::SshTunnel) {
+        show_license_gate(ui, "SSH 隧道");
+        return;
+    }
+    use crate::tunnel_pane::{
+        begin_connect, confirm_host_key, create_profile, start_profile, state_label,
+        stop_profile, TunnelPhase,
+    };
+    use stacio_core_bridge::{TunnelKind, TunnelState};
+
+    let state = wb.tunnel_state.clone();
+    ui.heading("隧道");
+    ui.add_space(4.0);
+
+    let mut connect = false;
+    let mut confirm = false;
+    let mut cancel_confirm = false;
+    let mut back = false;
+    let mut create = false;
+    let mut start_id: Option<String> = None;
+    let mut stop_id: Option<String> = None;
+
+    {
+        let mut s = state.lock().unwrap();
+        match &s.phase {
+            TunnelPhase::Auth => {
+                if ui.button("连接 SSH 上下文").clicked() {
+                    connect = true;
+                }
+                ui.horizontal(|ui| {
+                    ui.label("主机");
+                    ui.text_edit_singleline(&mut s.host);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("端口");
+                    ui.add(egui::DragValue::new(&mut s.port).range(1..=65535));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("用户");
+                    ui.text_edit_singleline(&mut s.username);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("密码");
+                    ui.add(egui::TextEdit::singleline(&mut s.password).password(true));
+                });
+                ui.checkbox(&mut s.use_agent, "Agent");
+            }
+            TunnelPhase::Busy(msg) => {
+                ui.label(format!("⏳ {msg}"));
+            }
+            TunnelPhase::ConfirmHostKey {
+                fingerprint,
+                previous,
+                ..
+            } => {
+                if previous.is_some() {
+                    ui.colored_label(egui::Color32::from_rgb(220, 90, 90), "⚠ 主机密钥已变更");
+                } else {
+                    ui.label("首次连接，确认指纹：");
+                }
+                ui.label(format!("SHA256: {fingerprint}"));
+                ui.horizontal(|ui| {
+                    if ui.button("信任并连接").clicked() {
+                        confirm = true;
+                    }
+                    if ui.button("取消").clicked() {
+                        cancel_confirm = true;
+                    }
+                });
+            }
+            TunnelPhase::Ready => {
+                ui.small("SSH 上下文已就绪");
+                ui.separator();
+                // 新建表单。
+                ui.label("新建隧道：");
+                ui.horizontal(|ui| {
+                    ui.label("类型");
+                    egui::ComboBox::from_id_salt("tunnel-kind")
+                        .selected_text(match s.draft_kind {
+                            TunnelKind::Local => "本地转发",
+                            TunnelKind::Remote => "远程转发",
+                            TunnelKind::Dynamic => "动态 SOCKS5",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut s.draft_kind, TunnelKind::Local, "本地转发");
+                            ui.selectable_value(&mut s.draft_kind, TunnelKind::Remote, "远程转发");
+                            ui.selectable_value(&mut s.draft_kind, TunnelKind::Dynamic, "动态 SOCKS5");
+                        });
+                });
+                ui.horizontal(|ui| {
+                    ui.label("本地端口");
+                    ui.add(egui::DragValue::new(&mut s.draft_local_port).range(1..=65535));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("目标主机");
+                    ui.text_edit_singleline(&mut s.draft_remote_host);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("目标端口");
+                    ui.add(egui::DragValue::new(&mut s.draft_remote_port).range(1..=65535));
+                });
+                if ui.button("保存隧道").clicked() {
+                    create = true;
+                }
+                ui.separator();
+                // 隧道列表。
+                for p in &s.profiles {
+                    let st = s
+                        .statuses
+                        .get(&p.id)
+                        .cloned()
+                        .unwrap_or(TunnelState::Stopped);
+                    let kind = match p.kind {
+                        TunnelKind::Local => "L",
+                        TunnelKind::Remote => "R",
+                        TunnelKind::Dynamic => "D",
+                    };
+                    ui.horizontal(|ui| {
+                        ui.label(format!(
+                            "[{kind}] {}:{} → {}:{}",
+                            p.local_host, p.local_port, p.remote_host, p.remote_port
+                        ));
+                        ui.weak(state_label(&st));
+                        match st {
+                            TunnelState::Stopped | TunnelState::Failed => {
+                                if ui.small_button("启动").clicked() {
+                                    start_id = Some(p.id.clone());
+                                }
+                            }
+                            _ => {
+                                if ui.small_button("停止").clicked() {
+                                    stop_id = Some(p.id.clone());
+                                }
+                            }
+                        }
+                    });
+                }
+            }
+            TunnelPhase::Failed(msg) => {
+                ui.colored_label(egui::Color32::from_rgb(220, 90, 90), msg);
+                if ui.button("返回").clicked() {
+                    back = true;
+                }
+            }
+        }
+    }
+
+    // 释放锁后触发动作。
+    if connect {
+        begin_connect(&state);
+    }
+    if confirm {
+        confirm_host_key(&state);
+    }
+    if cancel_confirm {
+        state.lock().unwrap().phase = TunnelPhase::Auth;
+    }
+    if back {
+        state.lock().unwrap().phase = TunnelPhase::Auth;
+    }
+    if create {
+        create_profile(&state);
+    }
+    if let Some(id) = start_id {
+        start_profile(&state, &id);
+    }
+    if let Some(id) = stop_id {
+        stop_profile(&state, &id);
     }
 }
 
