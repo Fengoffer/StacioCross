@@ -31,7 +31,8 @@ fn load_window_icon() -> Option<Icon> {
 }
 
 /// 加载 License 快照：debug 构建自动解锁全部功能（便于开发门控功能）；
-/// 也可用 `STACIO_LICENSE_FILE` 导入签名授权文件。fn load_license() -> stacio_license::LicenseSnapshot {
+/// 也可用 `STACIO_LICENSE_FILE` 导入签名授权文件。
+fn load_license() -> stacio_license::LicenseSnapshot {
     #[cfg(debug_assertions)]
     if std::env::var("STACIO_LICENSE_DEV").unwrap_or_default() == "0" {
         // 显式关闭 dev 解锁，走正式导入路径。
