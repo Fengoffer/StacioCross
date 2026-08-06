@@ -8,6 +8,7 @@ license.workspace = true
 stacio-term = { path = "../term" }
 stacio-platform = { path = "../platform" }
 stacio-core-bridge = { path = "../core-bridge" }
+stacio-license = { path = "../license" }
 egui.workspace = true
 egui-winit.workspace = true
 egui-wgpu.workspace = true
