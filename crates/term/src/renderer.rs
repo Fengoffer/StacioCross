@@ -674,6 +674,8 @@ pub struct TerminalRenderer {
 
     /// 终端搜索匹配（P4-6），绘制时高亮命中单元格。
     search_matches: Vec<crate::model::SearchMatch>,
+    /// 语义高亮标记（P4-19，功能清单 2.8）：行号 → 1=错误 / 2=警告。
+    semantic_marks: std::collections::HashMap<i32, u8>,
 
     bg_buffer: wgpu::Buffer,
     glyph_buffer: wgpu::Buffer,
@@ -857,6 +859,7 @@ impl TerminalRenderer {
             metrics,
             atlas,
             search_matches: Vec::new(),
+            semantic_marks: std::collections::HashMap::new(),
             bg_buffer,
             glyph_buffer,
             bg_len: 0,
@@ -904,6 +907,11 @@ impl TerminalRenderer {
     /// 设置终端搜索匹配（空 = 无高亮）。
     pub fn set_search_matches(&mut self, matches: Vec<crate::model::SearchMatch>) {
         self.search_matches = matches;
+    }
+
+    /// 设置语义高亮标记（功能清单 2.8）。
+    pub fn set_semantic_marks(&mut self, marks: std::collections::HashMap<i32, u8>) {
+        self.semantic_marks = marks;
     }
 
     /// 当前调色板。
@@ -983,6 +991,19 @@ impl TerminalRenderer {
                 .any(|m| m.line == point.line.0 && col >= m.start_col && col < m.end_col);
             if in_search {
                 bg_rgb = SEARCH_HIGHLIGHT;
+            }
+
+            // 语义高亮（功能清单 2.8）：错误行红色、警告行黄色前景（未显式着色时）。
+            if let Some(mark) = self.semantic_marks.get(&point.line.0) {
+                let is_default_fg = matches!(fg, Color::Named(NamedColor::Foreground))
+                    || matches!(fg, Color::Indexed(7))
+                    || matches!(fg, Color::Indexed(15));
+                if is_default_fg {
+                    match mark {
+                        1 => bg_rgb = Rgb { r: 0x7a, g: 0x2a, b: 0x2a }, // 错误行背景
+                        _ => bg_rgb = Rgb { r: 0x6a, g: 0x5a, b: 0x2a }, // 警告行背景
+                    }
+                }
             }
 
             // 背景：仅当与屏幕底色不同才发矩形。

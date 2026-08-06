@@ -531,6 +531,11 @@ impl App {
         }
         if let Ok(mut r) = renderer.lock() {
             r.set_search_matches(matches.clone());
+            // 语义高亮（功能清单 2.8）。
+            if let Some(model) = wb.active_model() {
+                let marks = model.lock().unwrap().semantic_marks();
+                r.set_semantic_marks(marks);
+            }
         }
         if (search_next || search_prev) && !matches.is_empty() {
             let n = matches.len();

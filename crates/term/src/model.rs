@@ -700,6 +700,34 @@ impl TerminalModel {
             .collect::<Vec<_>>()
             .join("\n")
     }
+
+    /// 语义高亮标记（功能清单 2.8）：扫描可视行内容，
+    /// 含 `[ERROR]`/`ERROR` → 1，`[WARN]`/`WARN` → 2，其他 → 不标记。
+    /// 返回 (行号 → 标记)。
+    pub fn semantic_marks(&self) -> std::collections::HashMap<i32, u8> {
+        let content = self.term.renderable_content();
+        let mut lines: std::collections::BTreeMap<i32, String> = Default::default();
+        for idx in content.display_iter {
+            lines
+                .entry(idx.point.line.0)
+                .or_default()
+                .push(idx.cell.c);
+        }
+        lines
+            .into_iter()
+            .filter_map(|(line, text)| {
+                let upper = text.to_ascii_uppercase();
+                let mark = if upper.contains("[ERROR]") || upper.contains(" ERROR") {
+                    Some(1u8)
+                } else if upper.contains("[WARN]") || upper.contains(" WARN") {
+                    Some(2u8)
+                } else {
+                    None
+                };
+                mark.map(|m| (line, m))
+            })
+            .collect()
+    }
 }
 
 /// 终端搜索匹配（显示坐标系）。
