@@ -1889,9 +1889,10 @@ fn show_logs_pane(ui: &mut egui::Ui, wb: &mut Workbench) {
                     bundle["sessions"] = serde_json::json!(snap.sessions.len());
                     bundle["folders"] = serde_json::json!(snap.folders.len());
                 }
-                if let Ok(text) = std::fs::write(&path, serde_json::to_string_pretty(&bundle).unwrap_or_default()) {
-                    let _ = text;
-                }
+                let _ = std::fs::write(
+                    &path,
+                    serde_json::to_string_pretty(&bundle).unwrap_or_default(),
+                );
             }
         }
     });
