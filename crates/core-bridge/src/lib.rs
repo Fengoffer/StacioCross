@@ -11,6 +11,9 @@ use std::path::PathBuf;
 
 pub use stacio_core::domain::files::{RemoteFileEntry, RemoteFileKind};
 pub use stacio_core::domain::macro_recording::MacroStep;
+pub use stacio_core::domain::multiexec::{MultiExecError, MultiExecTarget};
+pub use stacio_core::infrastructure::audit_repository::BroadcastAuditRecord;
+pub use stacio_core::services::multiexec_service::BroadcastAuditEvent;
 pub use stacio_core::domain::scp::{
     ScpDirection, ScpResumeOptions, ScpTransferJob, ScpTransferProgress,
 };
@@ -319,6 +322,35 @@ impl CoreHandle {
     /// 关闭隧道。
     pub fn close_tunnel(&self, profile_id: &str) -> Result<TunnelRuntimeStatus, TunnelError> {
         stacio_core::close_live_tunnel_runtime(profile_id.to_owned())
+    }
+
+    // -----------------------------------------------------------------------
+    // MultiExec（P4-14，功能清单 2.4，License: multiExec）
+    // -----------------------------------------------------------------------
+
+    /// 规划广播（审计）：校验目标 + 生成审计事件。
+    pub fn prepare_broadcast(
+        &self,
+        targets: Vec<MultiExecTarget>,
+        input: &str,
+        production_confirmed: bool,
+    ) -> Result<BroadcastAuditEvent, MultiExecError> {
+        stacio_core::prepare_broadcast_input(targets, input.to_owned(), production_confirmed)
+    }
+
+    /// 标记已执行并入库。
+    pub fn record_broadcast(
+        &self,
+        event: BroadcastAuditEvent,
+        sent_count: u32,
+    ) -> Result<BroadcastAuditRecord, SshRuntimeError> {
+        let executed = stacio_core::mark_broadcast_executed(event, sent_count);
+        stacio_core::record_broadcast_audit_event(self.db_str(), executed)
+    }
+
+    /// 列出广播审计记录。
+    pub fn list_broadcast_audits(&self, limit: u32) -> Result<Vec<BroadcastAuditRecord>, SshRuntimeError> {
+        stacio_core::list_broadcast_audit_records(self.db_str(), limit)
     }
 
     fn db_str(&self) -> String {

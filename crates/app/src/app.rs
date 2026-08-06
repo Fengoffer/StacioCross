@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use stacio_term::model::{TerminalModel, TerminalSize};
 use stacio_term::renderer::{FontPair, TerminalRenderer};
-use crate::workbench::Workbench;
+use crate::workbench::{TabKind, Workbench};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::WindowEvent;
@@ -126,6 +126,11 @@ struct App {
     // License（P4-12）：功能门控快照 + 授权窗口开关
     license: stacio_license::LicenseSnapshot,
     license_window_open: bool,
+
+    // MultiExec（P4-14）：窗口开关 + 广播输入
+    multiexec_open: bool,
+    multiexec_input: String,
+    multiexec_selected: std::collections::HashSet<String>,
 }
 
 impl App {
@@ -159,6 +164,9 @@ impl App {
             font_size: 13.0,
             license: load_license(),
             license_window_open: false,
+            multiexec_open: false,
+            multiexec_input: String::new(),
+            multiexec_selected: std::collections::HashSet::new(),
         }
     }
 
@@ -416,6 +424,12 @@ impl App {
                     if ui.small_button(format!("🔑 {lic_status}")).clicked() {
                         self.license_window_open = true;
                     }
+                    // 多执行（功能清单 2.4，License: multiExec）。
+                    if self.license.is_enabled(stacio_license::Feature::MultiExec) {
+                        if ui.small_button("≡ 多执行").clicked() {
+                            self.multiexec_open = true;
+                        }
+                    }
                 });
             });
 
@@ -489,7 +503,117 @@ impl App {
         // 授权窗口（状态 / 功能门控 / 导入 / 开发签名）。
         self.show_license_window(ui.ctx());
 
+        // MultiExec 窗口（功能清单 2.4）。
+        if self.multiexec_open {
+            self.show_multiexec_window(ui.ctx(), &wb);
+        }
+
         self.workbench = Some(wb);
+    }
+
+    /// MultiExec 窗口：目标多选 + 广播输入 + 审计记录。
+    fn show_multiexec_window(&mut self, ctx: &egui::Context, wb: &Workbench) {
+        let mut broadcast = false;
+        egui::Window::new("多执行")
+            .open(&mut self.multiexec_open)
+            .default_size(egui::Vec2::new(420.0, 360.0))
+            .show(ctx, |ui| {
+                ui.label("目标（运行中的 SSH 会话）：");
+                let mut targets: Vec<stacio_core_bridge::MultiExecTarget> = Vec::new();
+                for tab in &wb.tabs {
+                    let TabKind::Ssh(state) = &tab.kind else { continue };
+                    let rid = match &state.lock().unwrap().phase {
+                        crate::ssh_tab::SshPhase::Running { runtime_id } => runtime_id.clone(),
+                        _ => continue,
+                    };
+                    let mut checked = self.multiexec_selected.contains(&rid);
+                    if ui.checkbox(&mut checked, &tab.title).changed() {
+                        if checked {
+                            self.multiexec_selected.insert(rid.clone());
+                        } else {
+                            self.multiexec_selected.remove(&rid);
+                        }
+                    }
+                    targets.push(stacio_core_bridge::MultiExecTarget::new(
+                        &rid,
+                        &tab.title,
+                        "ssh",
+                        checked,
+                    ));
+                }
+                if targets.is_empty() {
+                    ui.small("暂无运行中的 SSH 会话");
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("广播输入");
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.multiexec_input)
+                            .desired_rows(3)
+                            .desired_width(f32::INFINITY),
+                    );
+                });
+                if ui.button("广播到所选会话").clicked() {
+                    broadcast = true;
+                }
+                ui.separator();
+                ui.label("最近审计：");
+                let audits = stacio_core_bridge::CoreHandle::new()
+                    .list_broadcast_audits(10)
+                    .unwrap_or_default();
+                for a in audits.iter().rev().take(10) {
+                    ui.small(format!(
+                        "→ {} ({} 目标/{} 发送)",
+                        a.redacted_input, a.target_count, a.sent_count
+                    ));
+                }
+            });
+        if broadcast {
+            let input = std::mem::take(&mut self.multiexec_input);
+            let targets: Vec<stacio_core_bridge::MultiExecTarget> = wb
+                .tabs
+                .iter()
+                .filter_map(|t| match &t.kind {
+                    TabKind::Ssh(state) => {
+                        let s = state.lock().unwrap();
+                        match &s.phase {
+                            crate::ssh_tab::SshPhase::Running { runtime_id } => {
+                                let rid = runtime_id.clone();
+                                if self.multiexec_selected.contains(&rid) {
+                                    Some(stacio_core_bridge::MultiExecTarget::new(
+                                        &rid,
+                                        &t.title,
+                                        "ssh",
+                                        true,
+                                    ))
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                })
+                .collect();
+            if !targets.is_empty() && !input.is_empty() {
+                let handle = stacio_core_bridge::CoreHandle::new();
+                // 审计计划。
+                let event = handle.prepare_broadcast(targets.clone(), &input, false);
+                // 实际投递：写入每个目标的运行时。
+                let mut sent = 0u32;
+                for t in &targets {
+                    if handle.write_input(&t.id, input.as_bytes().to_vec()).is_ok() {
+                        sent += 1;
+                    }
+                }
+                // 记录审计。
+                if let Ok(event) = event {
+                    let _ = handle.record_broadcast(event, sent);
+                }
+                log::info!("多执行广播：{sent}/{} 目标", targets.len());
+            }
+        }
     }
 
     /// 授权窗口：展示状态、entitlements、导入授权文件、生成离线申请。
