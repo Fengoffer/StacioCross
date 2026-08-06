@@ -47,11 +47,79 @@ pub struct FolderNode {
     pub sessions: Vec<SessionNode>,
 }
 
+/// 终端窗格（分屏的最小单元）。
+pub struct Pane {
+    pub model: Arc<Mutex<TerminalModel>>,
+    /// SSH 标签：与主窗格共享状态（同一连接，多视图）。
+    pub ssh: Option<Arc<Mutex<crate::ssh_tab::SshTabState>>>,
+}
+
+impl Pane {
+    fn local(model: Arc<Mutex<TerminalModel>>) -> Self {
+        Self { model, ssh: None }
+    }
+}
+
+/// 分屏布局模式（功能清单 2.3）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitMode {
+    /// 单窗格。
+    Single,
+    /// 垂直分屏（左右）。
+    Vertical,
+    /// 水平分屏（上下）。
+    Horizontal,
+}
+
 /// 工作区标签。
 pub struct Tab {
     pub title: String,
     pub model: Arc<Mutex<TerminalModel>>,
     pub kind: TabKind,
+    /// 分屏窗格（index 0 为主窗格，使用 self.model）。
+    pub panes: Vec<Pane>,
+    pub split: SplitMode,
+}
+
+impl Tab {
+    fn local(title: String, model: Arc<Mutex<TerminalModel>>) -> Self {
+        Self {
+            title,
+            model: model.clone(),
+            kind: TabKind::Local,
+            panes: vec![Pane::local(model)],
+            split: SplitMode::Single,
+        }
+    }
+
+    fn ssh(
+        title: String,
+        model: Arc<Mutex<TerminalModel>>,
+        state: Arc<Mutex<crate::ssh_tab::SshTabState>>,
+    ) -> Self {
+        Self {
+            title,
+            model: model.clone(),
+            kind: TabKind::Ssh(state.clone()),
+            panes: vec![Pane { model, ssh: Some(state) }],
+            split: SplitMode::Single,
+        }
+    }
+
+    /// 追加一个分屏窗格（共享 SSH 状态或新建本地终端）。
+    pub fn add_pane(&mut self) {
+        let model = Arc::new(Mutex::new(TerminalModel::new(stacio_term::model::TerminalSize::new(80, 24))));
+        let ssh = match &self.kind {
+            TabKind::Ssh(s) => Some(s.clone()),
+            _ => None,
+        };
+        self.panes.push(Pane { model, ssh });
+        // 自动切换布局：第 2 个窗格用垂直，第 3+ 用水平网格简化。
+        self.split = match self.panes.len() {
+            2 => SplitMode::Vertical,
+            _ => SplitMode::Horizontal,
+        };
+    }
 }
 
 /// 标签内容类型：本地终端 vs SSH 会话（P4-2）。
@@ -130,11 +198,7 @@ impl Workbench {
 
         Self {
             folders,
-            tabs: vec![Tab {
-                title: initial_title.to_string(),
-                model: initial_model,
-                kind: TabKind::Local,
-            }],
+            tabs: vec![Tab::local(initial_title.to_string(), initial_model)],
             active_tab: 0,
             inspector_seg: 0,
             search: String::new(),
@@ -151,11 +215,7 @@ impl Workbench {
         let model = Arc::new(Mutex::new(TerminalModel::new(stacio_term::model::TerminalSize::new(
             100, 30,
         ))));
-        self.tabs.push(Tab {
-            title: title.to_string(),
-            model,
-            kind: TabKind::Local,
-        });
+        self.tabs.push(Tab::local(title.to_string(), model));
         self.active_tab = self.tabs.len() - 1;
     }
 
@@ -174,11 +234,11 @@ impl Workbench {
                 session.username.as_deref().unwrap_or("root"),
             ),
         };
-        self.tabs.push(Tab {
-            title: session.name.clone(),
+        self.tabs.push(Tab::ssh(
+            session.name.clone(),
             model,
-            kind: TabKind::Ssh(Arc::new(Mutex::new(state))),
-        });
+            Arc::new(Mutex::new(state)),
+        ));
         self.active_tab = self.tabs.len() - 1;
     }
 
@@ -195,16 +255,17 @@ impl Workbench {
             100, 30,
         ))));
         let state = crate::ssh_tab::SshTabState::new(host, port, username);
-        self.tabs.push(Tab {
-            title: format!("{username}@{host}"),
+        self.tabs.push(Tab::ssh(
+            format!("{username}@{host}"),
             model,
-            kind: TabKind::Ssh(Arc::new(Mutex::new(state))),
-        });
+            Arc::new(Mutex::new(state)),
+        ));
         self.active_tab = self.tabs.len() - 1;
     }
 
     pub fn active_model(&self) -> Option<Arc<Mutex<TerminalModel>>> {
-        self.tabs.get(self.active_tab).map(|t| t.model.clone())
+        // 分屏后取主窗格（pane 0）的 model，与 self.model 同一实例。
+        self.tabs.get(self.active_tab).map(|t| t.panes.first().map(|p| p.model.clone()).unwrap_or_else(|| t.model.clone()))
     }
 
     /// 处理侧栏动作：打开 / 编辑 / 删除 / 新建…
@@ -621,7 +682,7 @@ pub fn show_sidebar(ui: &mut egui::Ui, wb: &mut Workbench) -> Vec<SidebarAction>
     actions
 }
 
-/// 渲染工作区：标签栏 + 终端。
+/// 渲染工作区：标签栏 + 终端（含分屏，功能清单 2.3）。
 pub fn show_workspace(
     ui: &mut egui::Ui,
     wb: &mut Workbench,
@@ -651,6 +712,27 @@ pub fn show_workspace(
             let n = wb.tabs.len() + 1;
             wb.open_tab(renderer, &format!("local-{n}"));
         }
+        ui.separator();
+        // 分屏按钮（作用于当前标签）。
+        if ui.small_button("⊞ 分屏").clicked() {
+            if let Some(tab) = wb.tabs.get_mut(wb.active_tab) {
+                if tab.panes.len() < 4 {
+                    tab.add_pane();
+                }
+            }
+        }
+        if ui.small_button("⊟ 取消分屏").clicked() {
+            if let Some(tab) = wb.tabs.get_mut(wb.active_tab) {
+                if tab.panes.len() > 1 {
+                    tab.panes.pop();
+                    tab.split = if tab.panes.len() <= 1 {
+                        SplitMode::Single
+                    } else {
+                        tab.split
+                    };
+                }
+            }
+        }
     });
     ui.separator();
 
@@ -658,6 +740,81 @@ pub fn show_workspace(
     let rect = ui.available_rect_before_wrap();
     if rect.width() < 10.0 || rect.height() < 10.0 {
         return closed;
+    }
+
+    let tab = match wb.tabs.get_mut(wb.active_tab) {
+        Some(t) => t,
+        None => return closed,
+    };
+    let n_panes = tab.panes.len();
+    let split = tab.split;
+    // 克隆窗格的 Arc 引用，避免在渲染时再借用 wb.tabs / wb.uploads。
+    let pane_models: Vec<(Arc<Mutex<TerminalModel>>, Option<Arc<Mutex<crate::ssh_tab::SshTabState>>>)> = tab
+        .panes
+        .iter()
+        .map(|p| (p.model.clone(), p.ssh.clone()))
+        .collect();
+
+    // 按分屏模式切分 rect。
+    let pane_rects: Vec<egui::Rect> = match split {
+        SplitMode::Single => vec![rect],
+        SplitMode::Vertical => {
+            // 左右：每列均分；n>2 时简化为第一列独占 + 其余堆右（PoC）。
+            let mut v = Vec::new();
+            let mut x = rect.left();
+            for i in 0..n_panes {
+                let w = if i == n_panes - 1 {
+                    rect.right() - x
+                } else {
+                    rect.width() / n_panes as f32
+                };
+                v.push(egui::Rect::from_min_size(
+                    egui::pos2(x, rect.top()),
+                    egui::Vec2::new(w, rect.height()),
+                ));
+                x += w;
+            }
+            v
+        }
+        SplitMode::Horizontal => {
+            // 上下：每行均分。
+            let mut v = Vec::new();
+            let mut y = rect.top();
+            for i in 0..n_panes {
+                let h = if i == n_panes - 1 {
+                    rect.bottom() - y
+                } else {
+                    rect.height() / n_panes as f32
+                };
+                v.push(egui::Rect::from_min_size(
+                    egui::pos2(rect.left(), y),
+                    egui::Vec2::new(rect.width(), h),
+                ));
+                y += h;
+            }
+            v
+        }
+    };
+
+    // 逐窗格渲染（pane_models 已 clone Arc，无 wb 借用冲突）。
+    for (i, (model, ssh)) in pane_models.into_iter().enumerate() {
+        let pane = Pane { model, ssh };
+        render_pane(ui, &pane, &pane_rects[i], renderer, &mut wb.uploads);
+    }
+
+    closed
+}
+
+/// 渲染单个终端窗格（resize + SSH 阶段分发 / 本地拖放 + 渲染 + 输入捕获）。
+fn render_pane(
+    ui: &mut egui::Ui,
+    pane: &Pane,
+    rect: &egui::Rect,
+    renderer: &Arc<Mutex<TerminalRenderer>>,
+    uploads: &mut Vec<String>,
+) {
+    if rect.width() < 10.0 || rect.height() < 10.0 {
+        return;
     }
     let ppi = ui.ctx().pixels_per_point();
     let (cw, ch) = {
@@ -667,66 +824,62 @@ pub fn show_workspace(
     };
     let cols = (rect.width() * ppi / cw) as usize;
     let rows = (rect.height() * ppi / ch) as usize;
-
-    if let Some(model) = wb.active_model() {
-        {
-            let mut m = model.lock().unwrap();
-            let cur = m.size();
-            if cur.columns != cols || cur.rows != rows {
-                m.resize(stacio_term::model::TerminalSize::new(cols.max(1), rows.max(1)));
-            }
+    let model = pane.model.clone();
+    {
+        let mut m = model.lock().unwrap();
+        let cur = m.size();
+        if cur.columns != cols || cur.rows != rows {
+            m.resize(stacio_term::model::TerminalSize::new(cols.max(1), rows.max(1)));
         }
-        let tw = cols as f32 * cw / ppi;
-        let th = rows as f32 * ch / ppi;
-        let term_rect = egui::Rect::from_min_size(rect.min, egui::Vec2::new(tw, th));
+    }
+    let tw = cols as f32 * cw / ppi;
+    let th = rows as f32 * ch / ppi;
+    let term_rect = egui::Rect::from_min_size(rect.min, egui::Vec2::new(tw, th));
 
-        // SSH 标签：按阶段渲染（认证表单 / 指纹确认 / 运行终端）。
-        if let TabKind::Ssh(state) = &wb.tabs[wb.active_tab].kind {
-            let state = state.clone();
-            let running = matches!(
-                state.lock().unwrap().phase,
-                crate::ssh_tab::SshPhase::Running { .. }
-            );
-            if running {
-                let rid = match &state.lock().unwrap().phase {
-                    crate::ssh_tab::SshPhase::Running { runtime_id } => runtime_id.clone(),
-                    _ => unreachable!(),
-                };
-                crate::ssh_tab::report_resize(&state, cols as u32, rows as u32);
-                let callback = TerminalCallback { model: model.clone(), renderer: renderer.clone() };
-                ui.painter().add(egui::Shape::Callback(egui_wgpu::Callback::new_paint_callback(
-                    term_rect,
-                    callback,
-                )));
-                capture_terminal_input(ui, &rid, term_rect);
-            } else {
-                let mut st = state.lock().unwrap();
-                render_ssh_phase_ui(ui, &mut st, &state, &model);
-            }
-            return closed;
+    // SSH 窗格：按阶段渲染。
+    if let Some(state) = &pane.ssh {
+        let state = state.clone();
+        let running = matches!(
+            state.lock().unwrap().phase,
+            crate::ssh_tab::SshPhase::Running { .. }
+        );
+        if running {
+            let rid = match &state.lock().unwrap().phase {
+                crate::ssh_tab::SshPhase::Running { runtime_id } => runtime_id.clone(),
+                _ => unreachable!(),
+            };
+            crate::ssh_tab::report_resize(&state, cols as u32, rows as u32);
+            let callback = TerminalCallback { model: model.clone(), renderer: renderer.clone() };
+            ui.painter().add(egui::Shape::Callback(egui_wgpu::Callback::new_paint_callback(
+                term_rect,
+                callback,
+            )));
+            capture_terminal_input(ui, &rid, term_rect);
+        } else {
+            let mut st = state.lock().unwrap();
+            render_ssh_phase_ui(ui, &mut st, &state, &model);
         }
-
-        // 本地终端：拖放上传 + 渲染。
-        let drop_resp = ui.interact(term_rect, egui::Id::new("term-drop"), egui::Sense::hover());
-        if let Some(payload) = egui::DragAndDrop::payload::<FilePayload>(ui.ctx()) {
-            if drop_resp.hovered() && ui.input(|i| i.pointer.any_released()) {
-                let name = payload.name.clone();
-                wb.uploads.push(name.clone());
-                if let Ok(mut m) = model.lock() {
-                    m.process_bytes(format!("\r\n[upload] {name} -> remote\r\n").as_bytes());
-                }
-                egui::DragAndDrop::clear_payload(ui.ctx());
-            }
-        }
-
-        let callback = TerminalCallback { model, renderer: renderer.clone() };
-        ui.painter().add(egui::Shape::Callback(egui_wgpu::Callback::new_paint_callback(
-            term_rect,
-            callback,
-        )));
+        return;
     }
 
-    closed
+    // 本地终端：拖放上传 + 渲染。
+    let drop_resp = ui.interact(term_rect, egui::Id::new("term-drop"), egui::Sense::hover());
+    if let Some(payload) = egui::DragAndDrop::payload::<FilePayload>(ui.ctx()) {
+        if drop_resp.hovered() && ui.input(|i| i.pointer.any_released()) {
+            let name = payload.name.clone();
+            uploads.push(name.clone());
+            if let Ok(mut m) = model.lock() {
+                m.process_bytes(format!("\r\n[upload] {name} -> remote\r\n").as_bytes());
+            }
+            egui::DragAndDrop::clear_payload(ui.ctx());
+        }
+    }
+
+    let callback = TerminalCallback { model, renderer: renderer.clone() };
+    ui.painter().add(egui::Shape::Callback(egui_wgpu::Callback::new_paint_callback(
+        term_rect,
+        callback,
+    )));
 }
 
 /// SSH 标签的非运行阶段 UI：认证表单 / 指纹确认 / 失败重试。
