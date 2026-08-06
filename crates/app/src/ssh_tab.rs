@@ -70,6 +70,12 @@ pub struct SshTabState {
     pub command_history: Vec<String>,
     /// 当前行缓冲（命令历史跟踪用）。
     pub current_line: String,
+    /// 宏录制状态（功能清单 2.21）。
+    pub recording: bool,
+    /// 录制中的步骤。
+    pub record_steps: Vec<stacio_core_bridge::MacroStep>,
+    /// 上一步时间（计算 delay_ms）。
+    last_step_at: std::time::Instant,
     /// 已上报 core 的尺寸（避免每帧重复 record_resize）。
     pub last_report_cols: u32,
     pub last_report_rows: u32,
@@ -92,6 +98,9 @@ impl SshTabState {
             keepalive_seconds: 30,
             command_history: Vec::new(),
             current_line: String::new(),
+            recording: false,
+            record_steps: Vec::new(),
+            last_step_at: std::time::Instant::now(),
             last_report_cols: 0,
             last_report_rows: 0,
             poll_stop: Arc::new(AtomicBool::new(false)),
@@ -143,8 +152,19 @@ impl SshTabState {
         self.phase = phase;
     }
 
-    /// 跟踪输入行 → 命令历史（功能清单 2.20）。
+    /// 跟踪输入行 → 命令历史（功能清单 2.20）；录制时记步骤（功能清单 2.21）。
     pub fn feed_input(&mut self, bytes: &[u8]) {
+        if self.recording && !bytes.is_empty() {
+            let now = std::time::Instant::now();
+            let delay_ms = now.duration_since(self.last_step_at).as_millis().min(u32::MAX as u128) as u32;
+            let input = String::from_utf8_lossy(bytes).into_owned();
+            self.record_steps.push(stacio_core_bridge::MacroStep {
+                order: self.record_steps.len() as u32,
+                input,
+                delay_ms,
+            });
+            self.last_step_at = now;
+        }
         for &b in bytes {
             match b {
                 b'\r' | b'\n' => {
@@ -163,6 +183,21 @@ impl SshTabState {
                 b if b.is_ascii_control() => {}
                 _ => self.current_line.push(b as char),
             }
+        }
+    }
+
+    /// 开始 / 结束录制。返回录制的步骤（结束时）。
+    pub fn toggle_recording(&mut self) -> Vec<stacio_core_bridge::MacroStep> {
+        if self.recording {
+            self.recording = false;
+            let steps = std::mem::take(&mut self.record_steps);
+            self.last_step_at = std::time::Instant::now();
+            steps
+        } else {
+            self.recording = true;
+            self.record_steps.clear();
+            self.last_step_at = std::time::Instant::now();
+            Vec::new()
         }
     }
 }

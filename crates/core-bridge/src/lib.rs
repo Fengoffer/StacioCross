@@ -10,6 +10,7 @@
 use std::path::PathBuf;
 
 pub use stacio_core::domain::files::{RemoteFileEntry, RemoteFileKind};
+pub use stacio_core::domain::macro_recording::MacroStep;
 pub use stacio_core::domain::scp::{
     ScpDirection, ScpResumeOptions, ScpTransferJob, ScpTransferProgress,
 };
@@ -19,6 +20,7 @@ pub use stacio_core::domain::session::{
     SessionSidebarSnapshot, SessionUpdate,
 };
 pub use stacio_core::domain::telnet::TelnetConnectionConfig;
+pub use stacio_core::infrastructure::terminal_macro_repository::TerminalMacroRecord;
 pub use stacio_core::domain::ssh::{
     HostKeyTrustDecision, HostKeyVerification, LiveSshHostKey, SshAuthMethod, SshAuthSecret,
     SshConnectionConfig, SshRuntimeError,
@@ -245,6 +247,25 @@ impl CoreHandle {
         seconds: u32,
     ) -> Result<(), TerminalRuntimeError> {
         stacio_core::set_live_shell_keepalive_interval(runtime_id.to_owned(), seconds)
+    }
+
+    // -----------------------------------------------------------------------
+    // 终端宏（P4-11，功能清单 2.21）
+    // -----------------------------------------------------------------------
+
+    /// 创建命名宏（SQLite 持久化）。
+    pub fn create_macro(&self, name: &str, steps: Vec<MacroStep>) -> Result<TerminalMacroRecord, SshRuntimeError> {
+        stacio_core::create_terminal_macro(self.db_str(), name.to_owned(), steps)
+    }
+
+    /// 列出全部宏。
+    pub fn list_macros(&self) -> Result<Vec<TerminalMacroRecord>, SshRuntimeError> {
+        stacio_core::list_terminal_macros(self.db_str())
+    }
+
+    /// 删除宏。
+    pub fn delete_macro(&self, macro_id: &str) -> Result<(), SshRuntimeError> {
+        stacio_core::delete_terminal_macro(self.db_str(), macro_id.to_owned())
     }
 
     fn db_str(&self) -> String {
