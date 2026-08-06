@@ -14,6 +14,7 @@ pub use stacio_core::domain::device_metrics::{
     DeviceNetworkSample, DeviceSystemInfo,
 };
 pub use stacio_core::domain::files::{RemoteFileEntry, RemoteFileKind};
+pub use stacio_core::domain::ftp::{FtpAuthSecret, FtpConnectionConfig};
 pub use stacio_core::domain::macro_recording::MacroStep;
 pub use stacio_core::domain::multiexec::{MultiExecError, MultiExecTarget};
 pub use stacio_core::infrastructure::audit_repository::BroadcastAuditRecord;
@@ -125,6 +126,26 @@ impl CoreHandle {
             expected_fingerprint_sha256.to_owned(),
             remote_path.to_owned(),
         )
+    }
+
+    /// 列出远程 FTP 目录（无 host key）。
+    pub fn list_ftp_directory(
+        &self,
+        config: FtpConnectionConfig,
+        secret: FtpAuthSecret,
+        remote_path: &str,
+    ) -> Result<Vec<RemoteFileEntry>, SshRuntimeError> {
+        stacio_core::list_live_ftp_directory(config, secret, remote_path.to_owned())
+    }
+
+    /// FTP 传输（上传/下载，进度走同一 registry）。
+    pub fn run_ftp_transfer(
+        &self,
+        config: FtpConnectionConfig,
+        secret: FtpAuthSecret,
+        job: ScpTransferJob,
+    ) -> Result<Vec<ScpTransferProgress>, SshRuntimeError> {
+        stacio_core::run_live_ftp_transfer(config, secret, job)
     }
 
     // -----------------------------------------------------------------------

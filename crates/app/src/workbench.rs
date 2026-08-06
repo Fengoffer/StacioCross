@@ -1468,6 +1468,26 @@ fn show_files_pane(ui: &mut egui::Ui, wb: &mut Workbench) {
     ui.add_space(6.0);
     ui.separator();
     ui.heading("传输");
+    // 冲突策略（功能清单 3.6）。
+    {
+        let mut s = wb.remote_fs.lock().unwrap();
+        ui.horizontal(|ui| {
+            ui.label("冲突策略");
+            egui::ComboBox::from_id_salt("conflict-policy")
+                .selected_text(match s.conflict_policy.as_str() {
+                    "keepBoth" => "保留两者",
+                    "overwrite" => "覆盖",
+                    "rename" => "重命名",
+                    "skip" => "跳过",
+                    _ => "询问",
+                })
+                .show_ui(ui, |ui| {
+                    for (k, label) in [("ask", "询问"), ("keepBoth", "保留两者"), ("overwrite", "覆盖"), ("rename", "重命名"), ("skip", "跳过")] {
+                        if ui.selectable_value(&mut s.conflict_policy, k.to_string(), label).clicked() {}
+                    }
+                });
+        });
+    }
     let mut cancel: Option<String> = None;
     {
         let s = wb.remote_fs.lock().unwrap();
@@ -1590,7 +1610,26 @@ fn show_remote_pane(ui: &mut egui::Ui, state: &Arc<Mutex<crate::files_pane::Remo
         let mut st = state.lock().unwrap();
         match &st.phase {
             RemoteFsPhase::Auth => {
-                if ui.button("连接 SFTP").clicked() {
+                ui.horizontal(|ui| {
+                    ui.label("协议");
+                    egui::ComboBox::from_id_salt("fs-protocol")
+                        .selected_text(match st.protocol {
+                            crate::files_pane::FsProtocol::Sftp => "SFTP",
+                            crate::files_pane::FsProtocol::Ftp => "FTP",
+                        })
+                        .show_ui(ui, |ui| {
+                            if ui.selectable_label(st.protocol == crate::files_pane::FsProtocol::Sftp, "SFTP").clicked() {
+                                st.protocol = crate::files_pane::FsProtocol::Sftp;
+                                st.port = 22;
+                            }
+                            if ui.selectable_label(st.protocol == crate::files_pane::FsProtocol::Ftp, "FTP").clicked() {
+                                st.protocol = crate::files_pane::FsProtocol::Ftp;
+                                st.port = 21;
+                                st.use_agent = false;
+                            }
+                        });
+                });
+                if ui.button("连接").clicked() {
                     connect = true;
                 }
                 ui.horizontal(|ui| {
