@@ -10,7 +10,8 @@
 use std::path::PathBuf;
 
 pub use stacio_core::domain::session::{
-    SessionDraft, SessionError, SessionFolder, SessionRecord, SessionSidebarSnapshot, SessionUpdate,
+    QuickConnectTarget, SessionDraft, SessionError, SessionFolder, SessionRecord,
+    SessionSidebarSnapshot, SessionUpdate,
 };
 pub use stacio_core::domain::ssh::{
     HostKeyTrustDecision, HostKeyVerification, LiveSshHostKey, SshAuthMethod, SshAuthSecret,
@@ -80,6 +81,11 @@ impl CoreHandle {
     /// 删除会话记录（同时清理 known_host）。
     pub fn delete_session(&self, id: &str) -> Result<(), SessionError> {
         stacio_core::delete_session_record(self.db_str(), id.to_owned())
+    }
+
+    /// 解析 `user@host:port` 快速连接串。
+    pub fn parse_quick_connect(&self, input: &str) -> Result<QuickConnectTarget, SessionError> {
+        stacio_core::parse_quick_connect(input.to_owned())
     }
 
     // -----------------------------------------------------------------------
@@ -260,5 +266,20 @@ mod tests {
 
         std::env::remove_var("STACIO_DB");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Quick Connect 解析：`user@host:port` → 目标。
+    #[test]
+    fn quick_connect_parses() {
+        let handle = CoreHandle::new();
+        let target = handle.parse_quick_connect("root@example.com:2222").expect("parse");
+        assert_eq!(target.protocol, "ssh");
+        assert_eq!(target.username.as_deref(), Some("root"));
+        assert_eq!(target.host, "example.com");
+        assert_eq!(target.port, 2222);
+
+        let bare = handle.parse_quick_connect("10.0.1.5").expect("parse bare host");
+        assert_eq!(bare.username, None);
+        assert_eq!(bare.port, 22);
     }
 }

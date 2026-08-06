@@ -245,6 +245,171 @@ fn rgb_to_f32(rgb: Rgb) -> [f32; 4] {
     ]
 }
 
+/// 内置主题表（对应功能清单 2.6 的部分预设；.itermcolors 导入留后续）。
+pub mod themes {
+    use super::{hex, Palette};
+
+    /// Stacio Dark（默认，One Dark 系）。
+    pub fn stacio_dark() -> Palette {
+        Palette::default()
+    }
+
+    /// Solarized Dark。
+    pub fn solarized_dark() -> Palette {
+        Palette {
+            fg: hex(0x839496),
+            bg: hex(0x002b36),
+            cursor: hex(0x93a1a1),
+            cursor_text: hex(0x002b36),
+            selection: hex(0x073642),
+            ansi: [
+                hex(0x002b36),
+                hex(0xdc322f),
+                hex(0x859900),
+                hex(0xb58900),
+                hex(0x268bd2),
+                hex(0xd33682),
+                hex(0x2aa198),
+                hex(0xeee8d5),
+                hex(0x073642),
+                hex(0xcb4b16),
+                hex(0x586e75),
+                hex(0x657b83),
+                hex(0x839496),
+                hex(0x6c71c4),
+                hex(0x93a1a1),
+                hex(0xfdf6e3),
+            ],
+        }
+    }
+
+    /// Nord。
+    pub fn nord() -> Palette {
+        Palette {
+            fg: hex(0xd8dee9),
+            bg: hex(0x2e3440),
+            cursor: hex(0xd8dee9),
+            cursor_text: hex(0x2e3440),
+            selection: hex(0x434c5e),
+            ansi: [
+                hex(0x3b4252),
+                hex(0xbf616a),
+                hex(0xa3be8c),
+                hex(0xebcb8b),
+                hex(0x81a1c1),
+                hex(0xb48ead),
+                hex(0x88c0d0),
+                hex(0xe5e9f0),
+                hex(0x4c566a),
+                hex(0xbf616a),
+                hex(0xa3be8c),
+                hex(0xebcb8b),
+                hex(0x81a1c1),
+                hex(0xb48ead),
+                hex(0x8fbcbb),
+                hex(0xeceff4),
+            ],
+        }
+    }
+
+    /// Tokyo Night。
+    pub fn tokyo_night() -> Palette {
+        Palette {
+            fg: hex(0xc0caf5),
+            bg: hex(0x1a1b26),
+            cursor: hex(0xc0caf5),
+            cursor_text: hex(0x1a1b26),
+            selection: hex(0x33467c),
+            ansi: [
+                hex(0x15161e),
+                hex(0xf7768e),
+                hex(0x9ece6a),
+                hex(0xe0af68),
+                hex(0x7aa2f7),
+                hex(0xbb9af7),
+                hex(0x7dcfff),
+                hex(0xa9b1d6),
+                hex(0x414868),
+                hex(0xf7768e),
+                hex(0x9ece6a),
+                hex(0xe0af68),
+                hex(0x7aa2f7),
+                hex(0xbb9af7),
+                hex(0x7dcfff),
+                hex(0xc0caf5),
+            ],
+        }
+    }
+
+    /// Gruvbox Dark。
+    pub fn gruvbox_dark() -> Palette {
+        Palette {
+            fg: hex(0xebdbb2),
+            bg: hex(0x282828),
+            cursor: hex(0xebdbb2),
+            cursor_text: hex(0x282828),
+            selection: hex(0x504945),
+            ansi: [
+                hex(0x282828),
+                hex(0xcc241d),
+                hex(0x98971a),
+                hex(0xd79921),
+                hex(0x458588),
+                hex(0xb16286),
+                hex(0x689d6a),
+                hex(0xa89984),
+                hex(0x928374),
+                hex(0xfb4934),
+                hex(0xb8bb26),
+                hex(0xfabd2f),
+                hex(0x83a598),
+                hex(0xd3869b),
+                hex(0x8ec07c),
+                hex(0xebdbb2),
+            ],
+        }
+    }
+
+    /// Dracula。
+    pub fn dracula() -> Palette {
+        Palette {
+            fg: hex(0xf8f8f2),
+            bg: hex(0x282a36),
+            cursor: hex(0xf8f8f2),
+            cursor_text: hex(0x282a36),
+            selection: hex(0x44475a),
+            ansi: [
+                hex(0x21222c),
+                hex(0xff5555),
+                hex(0x50fa7b),
+                hex(0xf1fa8c),
+                hex(0xbd93f9),
+                hex(0xff79c6),
+                hex(0x8be9fd),
+                hex(0xf8f8f2),
+                hex(0x6272a4),
+                hex(0xff6e6e),
+                hex(0x69ff94),
+                hex(0xffffa5),
+                hex(0xd6acff),
+                hex(0xff92df),
+                hex(0xa4ffff),
+                hex(0xffffff),
+            ],
+        }
+    }
+
+    /// 主题表：(名称, 构造器)。
+    pub const THEMES: &[(&str, fn() -> Palette)] = &[
+        ("Stacio Dark", stacio_dark),
+        ("Solarized Dark", solarized_dark),
+        ("Nord", nord),
+        ("Tokyo Night", tokyo_night),
+        ("Gruvbox Dark", gruvbox_dark),
+        ("Dracula", dracula),
+    ];
+}
+
 fn dim_color([r, g, b, a]: [f32; 4]) -> [f32; 4] {
     [r * 0.6, g * 0.6, b * 0.6, a]
 }
@@ -718,6 +883,16 @@ impl TerminalRenderer {
                 },
             ],
         });
+    }
+
+    /// 切换主题（替换渲染调色板，下一帧生效）。
+    pub fn set_palette(&mut self, palette: Palette) {
+        self.palette = palette;
+    }
+
+    /// 当前调色板。
+    pub fn palette(&self) -> &Palette {
+        &self.palette
     }
 
     pub fn metrics(&self) -> FontMetrics {

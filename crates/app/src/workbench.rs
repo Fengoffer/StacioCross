@@ -177,6 +177,27 @@ impl Workbench {
         self.active_tab = self.tabs.len() - 1;
     }
 
+    /// 快速连接：直接以 host/port/username 开 SSH 标签（对应 `parse_quick_connect`）。
+    pub fn open_ssh_direct(
+        &mut self,
+        renderer: &Arc<Mutex<TerminalRenderer>>,
+        host: &str,
+        port: u16,
+        username: &str,
+    ) {
+        let _ = renderer;
+        let model = Arc::new(Mutex::new(TerminalModel::new(stacio_term::model::TerminalSize::new(
+            100, 30,
+        ))));
+        let state = crate::ssh_tab::SshTabState::new(host, port, username);
+        self.tabs.push(Tab {
+            title: format!("{username}@{host}"),
+            model,
+            kind: TabKind::Ssh(Arc::new(Mutex::new(state))),
+        });
+        self.active_tab = self.tabs.len() - 1;
+    }
+
     pub fn active_model(&self) -> Option<Arc<Mutex<TerminalModel>>> {
         self.tabs.get(self.active_tab).map(|t| t.model.clone())
     }
