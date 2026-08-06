@@ -80,6 +80,10 @@ struct App {
     frame_samples: Vec<f64>,
     fps: f32,
     peak_frame_ms: f32,
+
+    // Quick Connect / 终端主题
+    quick_connect: String,
+    theme_idx: usize,
 }
 
 impl App {
@@ -105,6 +109,8 @@ impl App {
             frame_samples: Vec::new(),
             fps: 0.0,
             peak_frame_ms: 0.0,
+            quick_connect: String::new(),
+            theme_idx: 0,
         }
     }
 
@@ -270,6 +276,45 @@ impl App {
                         let mb = self.bytes_fed.load(Ordering::Relaxed) as f64 / 1e6;
                         ui.label(format!("fed: {mb:.1} MB"));
                     }
+                    ui.separator();
+                    // Quick Connect：user@host[:port] → SSH 标签。
+                    ui.label("Quick");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.quick_connect)
+                            .hint_text("user@host:port")
+                            .desired_width(150.0),
+                    );
+                    if ui.button("连接").clicked() {
+                        let handle = stacio_core_bridge::CoreHandle::new();
+                        match handle.parse_quick_connect(&self.quick_connect) {
+                            Ok(target) if target.protocol.eq_ignore_ascii_case("ssh") => {
+                                wb.open_ssh_direct(
+                                    &renderer,
+                                    &target.host,
+                                    target.port,
+                                    target.username.as_deref().unwrap_or("root"),
+                                );
+                                self.quick_connect.clear();
+                            }
+                            Ok(_) => log::warn!("Quick Connect 暂仅支持 ssh 协议"),
+                            Err(e) => log::warn!("Quick Connect 解析失败: {e}"),
+                        }
+                    }
+                    ui.separator();
+                    // 终端主题（功能清单 2.6 预设子集）。
+                    let themes = stacio_term::renderer::themes::THEMES;
+                    egui::ComboBox::from_id_salt("term-theme")
+                        .selected_text(themes[self.theme_idx].0)
+                        .show_ui(ui, |ui| {
+                            for (i, (name, _)) in themes.iter().enumerate() {
+                                if ui.selectable_label(self.theme_idx == i, *name).clicked() {
+                                    self.theme_idx = i;
+                                    if let Ok(mut r) = renderer.lock() {
+                                        r.set_palette((themes[i].1)());
+                                    }
+                                }
+                            }
+                        });
                 });
             });
 
