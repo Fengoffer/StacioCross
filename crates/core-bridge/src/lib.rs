@@ -18,6 +18,7 @@ pub use stacio_core::domain::ftp::{FtpAuthSecret, FtpConnectionConfig};
 pub use stacio_core::domain::macro_recording::MacroStep;
 pub use stacio_core::domain::multiexec::{MultiExecError, MultiExecTarget};
 pub use stacio_core::infrastructure::audit_repository::BroadcastAuditRecord;
+pub use stacio_core::services::import_service::{ImportApplyResult, ImportPreview};
 pub use stacio_core::services::multiexec_service::BroadcastAuditEvent;
 pub use stacio_core::domain::scp::{
     ScpDirection, ScpResumeOptions, ScpTransferJob, ScpTransferProgress,
@@ -394,6 +395,57 @@ impl CoreHandle {
             secret,
             expected_fingerprint_sha256.to_owned(),
         )
+    }
+
+    // -----------------------------------------------------------------------
+    // 会话导入导出（P4-17，功能清单 1.7/1.8）
+    // -----------------------------------------------------------------------
+
+    /// 导出全部会话为 JSON。
+    pub fn export_sessions_json(&self) -> Result<String, SessionError> {
+        stacio_core::export_sessions_json(self.db_str())
+    }
+
+    /// 预览 CSV 导入。
+    pub fn preview_csv_import(&self, input: &str) -> Result<ImportPreview, SessionError> {
+        let existing = self
+            .session_sidebar_snapshot()
+            .map(|s| s.sessions.iter().map(|x| x.name.clone()).collect())
+            .unwrap_or_default();
+        stacio_core::preview_csv_import(input.to_owned(), existing)
+    }
+
+    /// 应用导入。
+    pub fn apply_session_import(
+        &self,
+        source_type: &str,
+        source_name: &str,
+        preview: ImportPreview,
+    ) -> Result<ImportApplyResult, SessionError> {
+        stacio_core::apply_session_import(
+            self.db_str(),
+            source_type.to_owned(),
+            source_name.to_owned(),
+            preview,
+        )
+    }
+
+    // -----------------------------------------------------------------------
+    // 端口探测（P4-17，功能清单 1.13；core 无 PortProbe，桥层用 TCP connect）
+    // -----------------------------------------------------------------------
+
+    /// TCP 端口连通性探测（非系统 ping，纯 Rust）。
+    pub fn probe_tcp_port(&self, host: &str, port: u16, timeout_ms: u32) -> bool {
+        use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+        use std::time::Duration;
+        let timeout = Duration::from_millis(timeout_ms as u64);
+        let addrs: Vec<SocketAddr> = match format!("{host}:{port}").to_socket_addrs() {
+            Ok(a) => a.collect(),
+            Err(_) => return false,
+        };
+        addrs
+            .iter()
+            .any(|addr| TcpStream::connect_timeout(addr, timeout).is_ok())
     }
 
     fn db_str(&self) -> String {

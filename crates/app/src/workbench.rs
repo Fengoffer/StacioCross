@@ -171,6 +171,12 @@ pub enum SidebarAction {
     RenameFolder(String),
     /// 删除文件夹。
     DeleteFolder(String),
+    /// 导出会话 JSON（功能清单 1.8）。
+    ExportSessions,
+    /// 导入会话（功能清单 1.7）。
+    ImportSessions,
+    /// Ping 主机（功能清单 1.13）。
+    PingHost(SessionNode),
 }
 
 /// 工作台状态。
@@ -193,6 +199,8 @@ pub struct Workbench {
     pub folder_edit: Option<FolderEditDraft>,
     /// 宏保存命名对话框（Some(name) = 弹出）。
     pub macro_save_name: Option<String>,
+    /// 会话导入预览（Some = 弹出确认对话框）。
+    pub import_preview: Option<(String, stacio_core_bridge::ImportPreview)>,
 }
 
 impl Workbench {
@@ -213,6 +221,7 @@ impl Workbench {
             session_edit: None,
             folder_edit: None,
             macro_save_name: None,
+            import_preview: None,
         }
     }
 
@@ -335,6 +344,45 @@ impl Workbench {
                     let _ = handle.delete_folder(&id);
                     self.reload_sessions();
                 }
+                SidebarAction::ExportSessions => {
+                    match handle.export_sessions_json() {
+                        Ok(json) => {
+                            let adapter = stacio_platform::default_adapter();
+                            if let Some(path) = adapter.save_file("导出会话为 JSON", "stacio-sessions.json") {
+                                if let Err(e) = std::fs::write(&path, json.as_bytes()) {
+                                    log::warn!("导出失败: {e}");
+                                }
+                            }
+                        }
+                        Err(e) => log::warn!("导出失败: {e}"),
+                    }
+                }
+                SidebarAction::ImportSessions => {
+                    let adapter = stacio_platform::default_adapter();
+                    if let Some(path) = adapter.pick_file("选择会话文件（CSV）") {
+                        if let Ok(data) = std::fs::read_to_string(&path) {
+                            match handle.preview_csv_import(&data) {
+                                Ok(preview) => {
+                                    let name = std::path::Path::new(&path)
+                                        .file_name()
+                                        .map(|n| n.to_string_lossy().into_owned())
+                                        .unwrap_or_else(|| path.clone());
+                                    self.import_preview = Some((name, preview));
+                                }
+                                Err(e) => log::warn!("导入预览失败: {e}"),
+                            }
+                        }
+                    }
+                }
+                SidebarAction::PingHost(node) => {
+                    let host = node.host.clone();
+                    let port = node.port;
+                    std::thread::spawn(move || {
+                        let ok = stacio_core_bridge::CoreHandle::new()
+                            .probe_tcp_port(&host, port, 3000);
+                        log::info!("Ping {host}:{port} → {}", if ok { "可达" } else { "不可达" });
+                    });
+                }
             }
         }
     }
@@ -429,6 +477,48 @@ impl Workbench {
 
     /// 渲染会话 / 文件夹编辑对话框。
     pub fn show_edit_dialogs(&mut self, ctx: &egui::Context) {
+        // 会话导入确认（功能清单 1.7）。
+        let mut apply_import = false;
+        let mut cancel_import = false;
+        if let Some((name, preview)) = &self.import_preview {
+            egui::Window::new("导入会话")
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label(format!("来源：{name}"));
+                    ui.label(format!("将导入 {} 个会话", preview.sessions.len()));
+                    ui.label(format!("冲突 {} · 忽略密钥字段 {}",
+                        preview.conflict_count, preview.ignored_secret_field_count));
+                    if !preview.warnings.is_empty() {
+                        for w in preview.warnings.iter().take(3) {
+                            ui.small(format!("⚠ {w}"));
+                        }
+                    }
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("应用导入").clicked() {
+                            apply_import = true;
+                        }
+                        if ui.button("取消").clicked() {
+                            cancel_import = true;
+                        }
+                    });
+                });
+        }
+        if apply_import {
+            if let Some((name, preview)) = self.import_preview.take() {
+                let handle = stacio_core_bridge::CoreHandle::new();
+                match handle.apply_session_import("csv", &name, preview) {
+                    Ok(result) => log::info!("导入完成：{} 个会话", result.imported_count),
+                    Err(e) => log::warn!("导入失败: {e}"),
+                }
+                self.reload_sessions();
+            }
+        }
+        if cancel_import {
+            self.import_preview = None;
+        }
+
         let mut save_session = false;
         let mut cancel_session = false;
         if let Some(draft) = &mut self.session_edit {
@@ -619,6 +709,10 @@ fn show_folder(
                         actions.push(SidebarAction::EditSession(s.clone()));
                         ui.close();
                     }
+                    if ui.button("Ping 主机").clicked() {
+                        actions.push(SidebarAction::PingHost(s.clone()));
+                        ui.close();
+                    }
                     if ui.button("删除").clicked() {
                         actions.push(SidebarAction::DeleteSession(s.id.clone()));
                         ui.close();
@@ -659,6 +753,12 @@ pub fn show_sidebar(ui: &mut egui::Ui, wb: &mut Workbench) -> Vec<SidebarAction>
         }
         if ui.small_button("＋文件夹").clicked() {
             actions.push(SidebarAction::NewFolder(None));
+        }
+        if ui.small_button("导出").clicked() {
+            actions.push(SidebarAction::ExportSessions);
+        }
+        if ui.small_button("导入").clicked() {
+            actions.push(SidebarAction::ImportSessions);
         }
     });
     ui.add(
