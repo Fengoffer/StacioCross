@@ -23,17 +23,17 @@ jobs:
           targets: x86_64-pc-windows-msvc
       - name: 编译 release
         run: cargo build --release --target x86_64-pc-windows-msvc -p stacio-app
-      - name: 生成 ico
+      - name: 生成 ico + 安装 NSIS
         shell: bash
         run: |
-          choco install imagemagick -y --no-progress 2>/dev/null || true
-          magick assets/icons/stacio-256.png packaging/windows/stacio.ico || true
+          choco install nsis imagemagick -y --no-progress 2>/dev/null || true
+          magick assets/icons/stacio-256.png packaging/windows/stacio.ico 2>/dev/null || \
+            cp assets/icons/stacio-256.png packaging/windows/stacio.ico
       - name: NSIS 中文安装包
         shell: bash
         run: |
-          choco install nsis -y --no-progress 2>/dev/null || true
           chmod +x scripts/build-installer.sh
-          ./scripts/build-installer.sh windows || true
+          ./scripts/build-installer.sh windows
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
