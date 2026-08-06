@@ -1846,7 +1846,53 @@ fn show_logs_pane(ui: &mut egui::Ui, wb: &mut Workbench) {
     ui.heading("诊断");
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.label("工作台：三栏布局已激活");
-        ui.label(format!("tabs: {}", wb.tabs.len()));
-        ui.label(format!("uploads: {}", wb.uploads.len()));
+        ui.label(format!("标签：{}", wb.tabs.len()));
+        ui.label(format!("上传记录：{}", wb.uploads.len()));
+        let handle = stacio_core_bridge::CoreHandle::new();
+        // 会话 / 宏 / 传输统计（功能清单 6.9）。
+        match handle.session_sidebar_snapshot() {
+            Ok(snap) => {
+                ui.label(format!("会话：{}（{} 文件夹）", snap.sessions.len(), snap.folders.len()));
+            }
+            Err(_) => {}
+        }
+        match handle.list_macros() {
+            Ok(macros) => ui.label(format!("宏：{}", macros.len())),
+            Err(_) => {}
+        }
+        {
+            let s = wb.remote_fs.lock().unwrap();
+            ui.label(format!("传输：{}（{} 进行中）", s.transfers.len(), s.transfers.iter().filter(|t| t.status == "running").count()));
+        }
+        // 授权状态。
+        let lic = stacio_license::load();
+        let status = match lic.status {
+            stacio_license::LicenseStatus::Active => "已授权",
+            _ => "未授权",
+        };
+        ui.label(format!("授权：{status}"));
+        ui.separator();
+        // 导出诊断包（功能清单 6.10）。
+        if ui.button("导出诊断包…").clicked() {
+            let adapter = stacio_platform::default_adapter();
+            if let Some(path) = adapter.save_file("保存诊断包", "stacio-diagnostics.json") {
+                let mut bundle = serde_json::json!({
+                    "protocol": "stacio.diagnostics.v1",
+                    "app": "Stacio",
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "os": std::env::consts::OS,
+                    "tabs": wb.tabs.len(),
+                    "uploads": wb.uploads.len(),
+                    "license": match status { "已授权" => "active", _ => "unlicensed" },
+                });
+                if let Ok(snap) = handle.session_sidebar_snapshot() {
+                    bundle["sessions"] = serde_json::json!(snap.sessions.len());
+                    bundle["folders"] = serde_json::json!(snap.folders.len());
+                }
+                if let Ok(text) = std::fs::write(&path, serde_json::to_string_pretty(&bundle).unwrap_or_default()) {
+                    let _ = text;
+                }
+            }
+        }
     });
 }
