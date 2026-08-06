@@ -5343,6 +5343,7 @@ dependencies = [
  "log",
  "png 0.17.16",
  "pollster",
+ "serde_json",
  "stacio-core-bridge",
  "stacio-license",
  "stacio-platform",
