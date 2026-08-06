@@ -1409,13 +1409,36 @@ fn show_tunnel_pane(ui: &mut egui::Ui, wb: &mut Workbench, license: &stacio_lice
 }
 
 /// 命令历史面板（功能清单 2.20）：展示活动 SSH 标签已输入的命令。
+/// 含基于历史的命令建议（功能清单 2.9）。
 fn show_command_history_pane(ui: &mut egui::Ui, wb: &Workbench) {
     ui.heading("命令历史");
     ui.add_space(4.0);
-    let history = match wb.tabs.get(wb.active_tab).map(|t| &t.kind) {
-        Some(TabKind::Ssh(state)) => state.lock().unwrap().command_history.clone(),
-        _ => Vec::new(),
+    let (history, current_line) = match wb.tabs.get(wb.active_tab).map(|t| &t.kind) {
+        Some(TabKind::Ssh(state)) => {
+            let s = state.lock().unwrap();
+            (s.command_history.clone(), s.current_line.clone())
+        }
+        _ => (Vec::new(), String::new()),
     };
+    // 命令建议：以当前输入开头的历史命令。
+    let trimmed = current_line.trim();
+    if !trimmed.is_empty() {
+        let mut suggestions: Vec<String> = history
+            .iter()
+            .filter(|c| c.starts_with(trimmed) && c.trim() != trimmed)
+            .rev()
+            .take(5)
+            .cloned()
+            .collect();
+        suggestions.dedup();
+        if !suggestions.is_empty() {
+            ui.label(format!("建议（当前输入：{trimmed}）："));
+            for s in &suggestions {
+                ui.small(format!("  ↳ {s}"));
+            }
+            ui.separator();
+        }
+    }
     if history.is_empty() {
         ui.small("暂无命令（在 SSH 终端输入命令后显示）");
         return;

@@ -414,6 +414,7 @@ fn spawn_output_pump(
         s.poll_stop.clone()
     };
     std::thread::spawn(move || {
+        let mut protected = false;
         while !stop.load(Ordering::Relaxed) {
             match handle.take_output(&runtime_id) {
                 Ok(batch) => {
@@ -422,6 +423,8 @@ fn spawn_output_pump(
                             m.process_bytes(&batch.bytes);
                         }
                     }
+                    // 输出保护（功能清单 2.23）：高频输出时降频，保护主线程。
+                    protected = batch.protection_active;
                 }
                 Err(_) => break, // runtime 已关闭
             }
@@ -439,7 +442,8 @@ fn spawn_output_pump(
                 Ok(_) => {}
                 Err(_) => break,
             }
-            std::thread::sleep(Duration::from_millis(50));
+            // 保护激活时放大轮询间隔。
+            std::thread::sleep(Duration::from_millis(if protected { 120 } else { 50 }));
         }
     });
 }
