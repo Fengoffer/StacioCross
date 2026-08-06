@@ -277,9 +277,8 @@ impl App {
         egui::Panel::left("sidebar")
             .exact_size(220.0)
             .show(ui, |ui| {
-                if let Some(name) = crate::workbench::show_sidebar(ui, &mut wb) {
-                    wb.open_tab(&renderer, &name);
-                }
+                let actions = crate::workbench::show_sidebar(ui, &mut wb);
+                wb.apply_actions(&renderer, actions);
             });
 
         // Inspector（右）。
@@ -298,6 +297,9 @@ impl App {
                 }
             }
         });
+
+        // 会话 / 文件夹编辑对话框。
+        wb.show_edit_dialogs(ui.ctx());
 
         self.workbench = Some(wb);
     }

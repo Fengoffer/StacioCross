@@ -10,8 +10,14 @@
 use std::path::PathBuf;
 
 pub use stacio_core::domain::session::{
-    SessionDraft, SessionError, SessionFolder, SessionRecord, SessionSidebarSnapshot,
+    SessionDraft, SessionError, SessionFolder, SessionRecord, SessionSidebarSnapshot, SessionUpdate,
 };
+pub use stacio_core::domain::ssh::{
+    HostKeyTrustDecision, HostKeyVerification, LiveSshHostKey, SshAuthMethod, SshAuthSecret,
+    SshConnectionConfig, SshRuntimeError,
+};
+pub use stacio_core::domain::terminal::{TerminalOutputBatch, TerminalRuntime, TerminalRuntimeError};
+pub use stacio_core::services::live_shell_service::LiveShellStatus;
 
 /// Core 句柄：持有数据库路径。
 pub struct CoreHandle {
@@ -51,14 +57,100 @@ impl CoreHandle {
         stacio_core::create_session_folder(self.db_str(), parent_id.map(str::to_owned), name.to_owned())
     }
 
+    /// 重命名会话文件夹。
+    pub fn rename_folder(&self, id: &str, name: &str) -> Result<SessionFolder, SessionError> {
+        stacio_core::rename_session_folder(self.db_str(), id.to_owned(), name.to_owned())
+    }
+
+    /// 删除会话文件夹。
+    pub fn delete_folder(&self, id: &str) -> Result<(), SessionError> {
+        stacio_core::delete_session_folder(self.db_str(), id.to_owned())
+    }
+
     /// 创建会话记录。
     pub fn create_session(&self, draft: SessionDraft) -> Result<SessionRecord, SessionError> {
         stacio_core::create_session_record(self.db_str(), draft)
     }
 
+    /// 部分更新会话记录。
+    pub fn update_session(&self, id: &str, update: SessionUpdate) -> Result<SessionRecord, SessionError> {
+        stacio_core::update_session_record(self.db_str(), id.to_owned(), update)
+    }
+
     /// 删除会话记录（同时清理 known_host）。
     pub fn delete_session(&self, id: &str) -> Result<(), SessionError> {
         stacio_core::delete_session_record(self.db_str(), id.to_owned())
+    }
+
+    // -----------------------------------------------------------------------
+    // SSH / 终端运行时（P4-2：首条 SSH 链路）
+    // -----------------------------------------------------------------------
+
+    /// 探测主机密钥（连接后立即断开，返回 observed 指纹与原始 key）。
+    pub fn probe_host_key(
+        &self,
+        config: SshConnectionConfig,
+    ) -> Result<LiveSshHostKey, SshRuntimeError> {
+        stacio_core::probe_live_ssh_host_key(config)
+    }
+
+    /// 应用主机密钥信任决策（存入 known_host 库）。
+    pub fn apply_host_key_decision(
+        &self,
+        host: &str,
+        port: u16,
+        host_key: Vec<u8>,
+        decision: HostKeyTrustDecision,
+    ) -> Result<HostKeyVerification, SshRuntimeError> {
+        stacio_core::apply_host_key_decision_in_database(
+            self.db_str(),
+            host.to_owned(),
+            port,
+            host_key,
+            decision,
+        )
+    }
+
+    /// 启动 SSH live shell（长任务：返回后由 UI 轮询输出/状态）。
+    pub fn start_ssh_shell(
+        &self,
+        config: SshConnectionConfig,
+        secret: SshAuthSecret,
+        expected_fingerprint_sha256: String,
+        cols: u32,
+        rows: u32,
+    ) -> Result<LiveShellStatus, SshRuntimeError> {
+        stacio_core::start_live_ssh_shell_runtime(config, secret, expected_fingerprint_sha256, cols, rows)
+    }
+
+    /// 轮询 live shell 状态。
+    pub fn poll_ssh_shell(&self, runtime_id: &str) -> Result<LiveShellStatus, TerminalRuntimeError> {
+        stacio_core::poll_live_ssh_shell(runtime_id.to_owned())
+    }
+
+    /// 取出待显示的输出批次（远端 → UI）。
+    pub fn take_output(&self, runtime_id: &str) -> Result<TerminalOutputBatch, TerminalRuntimeError> {
+        stacio_core::take_terminal_output_batch(runtime_id.to_owned())
+    }
+
+    /// 写入用户输入（UI → 远端，pump 负责发送）。
+    pub fn write_input(&self, runtime_id: &str, bytes: Vec<u8>) -> Result<(), TerminalRuntimeError> {
+        stacio_core::write_terminal_input(runtime_id.to_owned(), bytes)
+    }
+
+    /// 记录终端尺寸变更（联动 live shell 的 PTY resize）。
+    pub fn record_resize(
+        &self,
+        runtime_id: &str,
+        cols: u32,
+        rows: u32,
+    ) -> Result<TerminalRuntime, TerminalRuntimeError> {
+        stacio_core::record_terminal_resize(runtime_id.to_owned(), cols, rows)
+    }
+
+    /// 关闭终端运行时。
+    pub fn close_runtime(&self, runtime_id: &str) -> Result<TerminalRuntime, TerminalRuntimeError> {
+        stacio_core::close_terminal_runtime(runtime_id.to_owned())
     }
 
     fn db_str(&self) -> String {
@@ -138,6 +230,35 @@ mod tests {
         assert_eq!(snap.sessions[0].host, "10.0.1.10");
         assert_eq!(snap.sessions[0].folder_id.as_deref(), Some(folder.id.as_str()));
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 主机密钥决策流程（SSH 首连确认的核心逻辑）：
+    /// 未知 → Reject 探针报 UnknownHostKey → TrustAndSave → 之后 Reject 返回 Trusted。
+    #[test]
+    fn host_key_decision_probe_confirm_flow() {
+        let dir = std::env::temp_dir().join(format!("stacio-core-bridge-hostkey-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("hostkey.db");
+        // 先设置 STACIO_DB 再创建 handle（CoreHandle::new 构造时读取）。
+        std::env::set_var("STACIO_DB", db.to_string_lossy().into_owned());
+        let handle = CoreHandle::new();
+
+        let fake_key = b"fake-host-key-bytes".to_vec();
+
+        // 首次：未知主机 → Reject 探针应报 UnknownHostKey。
+        let probe = handle.apply_host_key_decision("example.com", 22, fake_key.clone(), HostKeyTrustDecision::Reject);
+        assert!(matches!(probe, Err(SshRuntimeError::UnknownHostKey)));
+
+        // 用户确认 → TrustAndSave → Trusted。
+        let save = handle.apply_host_key_decision("example.com", 22, fake_key.clone(), HostKeyTrustDecision::TrustAndSave);
+        assert!(save.is_ok());
+
+        // 之后 Reject 探针 → Trusted（已保存且匹配）。
+        let again = handle.apply_host_key_decision("example.com", 22, fake_key, HostKeyTrustDecision::Reject);
+        assert!(again.is_ok());
+
+        std::env::remove_var("STACIO_DB");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -31,10 +31,15 @@ pub struct SessionNode {
     pub id: String,
     pub name: String,
     pub host: String,
+    pub port: u16,
+    pub username: Option<String>,
+    pub protocol: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct FolderNode {
+    /// stacio_core 的文件夹 id（String）。
+    pub id: String,
     pub name: String,
     /// 子文件夹（多级树）。
     pub folders: Vec<FolderNode>,
@@ -45,6 +50,13 @@ pub struct FolderNode {
 pub struct Tab {
     pub title: String,
     pub model: Arc<Mutex<TerminalModel>>,
+    pub kind: TabKind,
+}
+
+/// 标签内容类型：本地终端 vs SSH 会话（P4-2）。
+pub enum TabKind {
+    Local,
+    Ssh(Arc<Mutex<crate::ssh_tab::SshTabState>>),
 }
 
 /// 拖放载荷：从 Files 面板拖出的"文件"。
@@ -53,18 +65,59 @@ pub struct FilePayload {
     pub name: String,
 }
 
+/// 会话编辑草稿（新建 = id None；编辑 = id Some）。
+#[derive(Debug, Clone)]
+pub struct SessionEditDraft {
+    pub id: Option<String>,
+    pub folder_id: Option<String>,
+    pub name: String,
+    pub protocol: String,
+    pub host: String,
+    pub port: u32,
+    pub username: String,
+}
+
+/// 文件夹编辑草稿（新建 = id None；重命名 = id Some）。
+#[derive(Debug, Clone)]
+pub struct FolderEditDraft {
+    pub id: Option<String>,
+    pub parent_id: Option<String>,
+    pub name: String,
+}
+
+/// 侧栏右键动作（show_sidebar 收集，由 app 统一执行）。
+#[derive(Debug, Clone)]
+pub enum SidebarAction {
+    /// 打开会话（SSH → SSH 标签）。
+    OpenSession(SessionNode),
+    /// 编辑会话。
+    EditSession(SessionNode),
+    /// 删除会话。
+    DeleteSession(String),
+    /// 在文件夹下新建会话（folder_id None = 顶层）。
+    NewSession(Option<String>),
+    /// 新建文件夹（parent_id）。
+    NewFolder(Option<String>),
+    /// 重命名文件夹。
+    RenameFolder(String),
+    /// 删除文件夹。
+    DeleteFolder(String),
+}
+
 /// 工作台状态。
 pub struct Workbench {
     pub folders: Vec<FolderNode>,
     pub tabs: Vec<Tab>,
     pub active_tab: usize,
-    pub inspector_open: bool,
     pub inspector_seg: usize,
     pub search: String,
     pub uploads: Vec<String>,
     /// Files 面板的本地文件列表（可拖到终端上传）。
     pub local_files: Vec<String>,
-    next_session_id: usize,
+    /// 会话编辑对话框（None = 关闭）。
+    pub session_edit: Option<SessionEditDraft>,
+    /// 文件夹编辑对话框（None = 关闭）。
+    pub folder_edit: Option<FolderEditDraft>,
 }
 
 impl Workbench {
@@ -77,9 +130,9 @@ impl Workbench {
             tabs: vec![Tab {
                 title: initial_title.to_string(),
                 model: initial_model,
+                kind: TabKind::Local,
             }],
             active_tab: 0,
-            inspector_open: true,
             inspector_seg: 0,
             search: String::new(),
             uploads: Vec::new(),
@@ -87,7 +140,8 @@ impl Workbench {
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
-            next_session_id: 100,
+            session_edit: None,
+            folder_edit: None,
         }
     }
 
@@ -99,12 +153,262 @@ impl Workbench {
         self.tabs.push(Tab {
             title: title.to_string(),
             model,
+            kind: TabKind::Local,
+        });
+        self.active_tab = self.tabs.len() - 1;
+    }
+
+    /// 打开 SSH 会话标签（Auth 阶段起步）。
+    pub fn open_ssh_tab(&mut self, renderer: &Arc<Mutex<TerminalRenderer>>, session: &SessionNode) {
+        let _ = renderer;
+        let model = Arc::new(Mutex::new(TerminalModel::new(stacio_term::model::TerminalSize::new(
+            100, 30,
+        ))));
+        let state = crate::ssh_tab::SshTabState::new(
+            &session.host,
+            session.port,
+            session.username.as_deref().unwrap_or("root"),
+        );
+        self.tabs.push(Tab {
+            title: format!("{}@{}", state.username, state.host),
+            model,
+            kind: TabKind::Ssh(Arc::new(Mutex::new(state))),
         });
         self.active_tab = self.tabs.len() - 1;
     }
 
     pub fn active_model(&self) -> Option<Arc<Mutex<TerminalModel>>> {
         self.tabs.get(self.active_tab).map(|t| t.model.clone())
+    }
+
+    /// 处理侧栏动作：打开 / 编辑 / 删除 / 新建…
+    pub fn apply_actions(
+        &mut self,
+        renderer: &Arc<Mutex<TerminalRenderer>>,
+        actions: Vec<SidebarAction>,
+    ) {
+        let handle = stacio_core_bridge::CoreHandle::new();
+        for action in actions {
+            match action {
+                SidebarAction::OpenSession(node) => {
+                    if node.protocol.eq_ignore_ascii_case("ssh") {
+                        self.open_ssh_tab(renderer, &node);
+                    } else {
+                        self.open_tab(renderer, &node.name);
+                    }
+                }
+                SidebarAction::EditSession(node) => {
+                    self.session_edit = Some(SessionEditDraft {
+                        id: Some(node.id.clone()),
+                        folder_id: None,
+                        name: node.name.clone(),
+                        protocol: node.protocol.clone(),
+                        host: node.host.clone(),
+                        port: node.port as u32,
+                        username: node.username.clone().unwrap_or_default(),
+                    });
+                }
+                SidebarAction::DeleteSession(id) => {
+                    let _ = handle.delete_session(&id);
+                    self.reload_sessions();
+                }
+                SidebarAction::NewSession(folder_id) => {
+                    self.session_edit = Some(SessionEditDraft {
+                        id: None,
+                        folder_id,
+                        name: String::new(),
+                        protocol: "ssh".to_string(),
+                        host: String::new(),
+                        port: 22,
+                        username: String::new(),
+                    });
+                }
+                SidebarAction::NewFolder(parent_id) => {
+                    self.folder_edit = Some(FolderEditDraft {
+                        id: None,
+                        parent_id,
+                        name: String::new(),
+                    });
+                }
+                SidebarAction::RenameFolder(id) => {
+                    let name = self.folder_name(&id).unwrap_or_default();
+                    self.folder_edit = Some(FolderEditDraft {
+                        id: Some(id),
+                        parent_id: None,
+                        name,
+                    });
+                }
+                SidebarAction::DeleteFolder(id) => {
+                    let _ = handle.delete_folder(&id);
+                    self.reload_sessions();
+                }
+            }
+        }
+    }
+
+    /// 重新加载会话树（增删改之后）。
+    pub fn reload_sessions(&mut self) {
+        self.folders = load_session_tree();
+    }
+
+    /// 按 id 找文件夹名（树查找）。
+    fn folder_name(&self, id: &str) -> Option<String> {
+        fn walk(folders: &[FolderNode], id: &str) -> Option<String> {
+            for f in folders {
+                if f.id == id {
+                    return Some(f.name.clone());
+                }
+                if let Some(n) = walk(&f.folders, id) {
+                    return Some(n);
+                }
+            }
+            None
+        }
+        walk(&self.folders, id)
+    }
+
+    /// 保存会话编辑（新建或更新）。
+    pub fn save_session_edit(&mut self) {
+        let Some(draft) = self.session_edit.take() else { return };
+        let handle = stacio_core_bridge::CoreHandle::new();
+        let username = if draft.username.is_empty() {
+            None
+        } else {
+            Some(draft.username.clone())
+        };
+        match &draft.id {
+            Some(id) => {
+                let update = stacio_core_bridge::SessionUpdate {
+                    name: Some(draft.name.clone()),
+                    protocol: Some(draft.protocol.clone()),
+                    folder_id: draft.folder_id.clone(),
+                    host: Some(draft.host.clone()),
+                    port: Some(draft.port),
+                    username,
+                    private_key_path: None,
+                    credential_id: None,
+                    tags: None,
+                    config_json: None,
+                };
+                if let Err(e) = handle.update_session(id, update) {
+                    log::warn!("更新会话失败: {e}");
+                }
+            }
+            None => {
+                let d = stacio_core_bridge::SessionDraft {
+                    folder_id: draft.folder_id.clone(),
+                    name: draft.name.clone(),
+                    protocol: draft.protocol.clone(),
+                    host: draft.host.clone(),
+                    port: draft.port,
+                    username,
+                    private_key_path: None,
+                    credential_id: None,
+                    tags: vec![],
+                    config_json: None,
+                };
+                if let Err(e) = handle.create_session(d) {
+                    log::warn!("创建会话失败: {e}");
+                }
+            }
+        }
+        self.reload_sessions();
+    }
+
+    /// 保存文件夹编辑（新建或重命名）。
+    pub fn save_folder_edit(&mut self) {
+        let Some(draft) = self.folder_edit.take() else { return };
+        let handle = stacio_core_bridge::CoreHandle::new();
+        match &draft.id {
+            Some(id) => {
+                if let Err(e) = handle.rename_folder(id, &draft.name) {
+                    log::warn!("重命名文件夹失败: {e}");
+                }
+            }
+            None => {
+                if let Err(e) = handle.create_folder(draft.parent_id.as_deref(), &draft.name) {
+                    log::warn!("创建文件夹失败: {e}");
+                }
+            }
+        }
+        self.reload_sessions();
+    }
+
+    /// 渲染会话 / 文件夹编辑对话框。
+    pub fn show_edit_dialogs(&mut self, ctx: &egui::Context) {
+        let mut save_session = false;
+        let mut cancel_session = false;
+        if let Some(draft) = &mut self.session_edit {
+            let title = if draft.id.is_some() { "编辑会话" } else { "新建会话" };
+            egui::Window::new(title).collapsible(false).resizable(false).show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("名称");
+                    ui.text_edit_singleline(&mut draft.name);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("协议");
+                    egui::ComboBox::from_id_salt("sess-protocol")
+                        .selected_text(&draft.protocol)
+                        .show_ui(ui, |ui| {
+                            for p in ["ssh", "sftp", "scp", "telnet", "serial"] {
+                                ui.selectable_value(&mut draft.protocol, p.to_string(), p);
+                            }
+                        });
+                });
+                ui.horizontal(|ui| {
+                    ui.label("主机");
+                    ui.text_edit_singleline(&mut draft.host);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("端口");
+                    ui.add(egui::DragValue::new(&mut draft.port).range(1..=65535));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("用户名");
+                    ui.text_edit_singleline(&mut draft.username);
+                });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.button("保存").clicked() {
+                        save_session = true;
+                    }
+                    if ui.button("取消").clicked() {
+                        cancel_session = true;
+                    }
+                });
+            });
+        }
+        if save_session {
+            self.save_session_edit();
+        } else if cancel_session {
+            self.session_edit = None;
+        }
+
+        let mut save_folder = false;
+        let mut cancel_folder = false;
+        if let Some(draft) = &mut self.folder_edit {
+            let title = if draft.id.is_some() { "重命名文件夹" } else { "新建文件夹" };
+            egui::Window::new(title).collapsible(false).resizable(false).show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("名称");
+                    ui.text_edit_singleline(&mut draft.name);
+                });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.button("保存").clicked() {
+                        save_folder = true;
+                    }
+                    if ui.button("取消").clicked() {
+                        cancel_folder = true;
+                    }
+                });
+            });
+        }
+        if save_folder {
+            self.save_folder_edit();
+        } else if cancel_folder {
+            self.folder_edit = None;
+        }
     }
 }
 
@@ -130,6 +434,7 @@ fn build_folder_tree(snap: &stacio_core_bridge::SessionSidebarSnapshot) -> Vec<F
         by_id.insert(
             f.id.as_str(),
             FolderNode {
+                id: f.id.clone(),
                 name: f.name.clone(),
                 folders: Vec::new(),
                 sessions: Vec::new(),
@@ -141,11 +446,15 @@ fn build_folder_tree(snap: &stacio_core_bridge::SessionSidebarSnapshot) -> Vec<F
             id: s.id.clone(),
             name: s.name.clone(),
             host: s.host.clone(),
+            port: s.port as u16,
+            username: s.username.clone(),
+            protocol: s.protocol.clone(),
         };
         match s.folder_id.as_deref().and_then(|id| by_id.get_mut(id)) {
             Some(folder) => folder.sessions.push(node),
             None => {
                 let entry = by_id.entry("__ungrouped__").or_insert_with(|| FolderNode {
+                    id: "__ungrouped__".to_string(),
                     name: "Ungrouped".to_string(),
                     folders: Vec::new(),
                     sessions: Vec::new(),
@@ -175,21 +484,22 @@ fn build_folder_tree(snap: &stacio_core_bridge::SessionSidebarSnapshot) -> Vec<F
     roots
 }
 
-/// 递归渲染文件夹（含子文件夹与会话）。
+/// 递归渲染文件夹（含子文件夹与会话）。动作收集到 `actions`。
 fn show_folder(
     ui: &mut egui::Ui,
     wb: &Workbench,
     folder: &FolderNode,
     path: &str,
-    opened: &mut Option<String>,
+    opened: &mut Option<SessionNode>,
+    actions: &mut Vec<SidebarAction>,
 ) {
     let salt = format!("folder-{path}");
-    egui::CollapsingHeader::new(&folder.name)
+    let collapsing = egui::CollapsingHeader::new(&folder.name)
         .id_salt(salt)
         .default_open(true)
         .show(ui, |ui| {
             for child in &folder.folders {
-                show_folder(ui, wb, child, &format!("{path}/{}", child.name), opened);
+                show_folder(ui, wb, child, &format!("{path}/{}", child.name), opened, actions);
             }
             for s in &folder.sessions {
                 if !wb.search.is_empty()
@@ -205,18 +515,59 @@ fn show_folder(
                     egui::DragAndDrop::set_payload(ui.ctx(), s.name.clone());
                 }
                 if resp.double_clicked() {
-                    *opened = Some(s.name.clone());
+                    *opened = Some(s.clone());
                 }
-                resp.on_hover_text(format!("{} (double-click to open)", s.host));
+                let _ = resp
+                    .clone()
+                    .on_hover_text(format!("{}:{} (double-click to open)", s.host, s.port));
+                // 会话右键菜单：编辑 / 删除。
+                resp.context_menu(|ui| {
+                    if ui.button("编辑…").clicked() {
+                        actions.push(SidebarAction::EditSession(s.clone()));
+                        ui.close();
+                    }
+                    if ui.button("删除").clicked() {
+                        actions.push(SidebarAction::DeleteSession(s.id.clone()));
+                        ui.close();
+                    }
+                });
             }
         });
+    // 文件夹 header 右键菜单。
+    collapsing.header_response.context_menu(|ui| {
+        if ui.button("新建会话…").clicked() {
+            actions.push(SidebarAction::NewSession(Some(folder.id.clone())));
+            ui.close();
+        }
+        if ui.button("新建子文件夹…").clicked() {
+            actions.push(SidebarAction::NewFolder(Some(folder.id.clone())));
+            ui.close();
+        }
+        if ui.button("重命名…").clicked() {
+            actions.push(SidebarAction::RenameFolder(folder.id.clone()));
+            ui.close();
+        }
+        if ui.button("删除文件夹").clicked() {
+            actions.push(SidebarAction::DeleteFolder(folder.id.clone()));
+            ui.close();
+        }
+    });
 }
 
-/// 渲染侧栏。返回被双击打开的会话名。
-pub fn show_sidebar(ui: &mut egui::Ui, wb: &mut Workbench) -> Option<String> {
+/// 渲染侧栏。返回收集到的动作（打开 / 编辑 / 删除 / 新建…）。
+pub fn show_sidebar(ui: &mut egui::Ui, wb: &mut Workbench) -> Vec<SidebarAction> {
     let mut opened = None;
+    let mut actions = Vec::new();
 
-    ui.heading("Sessions");
+    ui.horizontal(|ui| {
+        ui.heading("Sessions");
+        if ui.small_button("＋会话").clicked() {
+            actions.push(SidebarAction::NewSession(None));
+        }
+        if ui.small_button("＋文件夹").clicked() {
+            actions.push(SidebarAction::NewFolder(None));
+        }
+    });
     ui.add(
         egui::TextEdit::singleline(&mut wb.search)
             .hint_text("Search sessions…")
@@ -229,16 +580,19 @@ pub fn show_sidebar(ui: &mut egui::Ui, wb: &mut Workbench) -> Option<String> {
         ui.add_space(12.0);
         ui.label("会话库为空");
         ui.small(format!("数据库: {}", stacio_core_bridge::CoreHandle::new().db_path()));
-        ui.small("在 stacio_core 中创建会话后此处显示");
+        ui.small("点「＋会话」新建，或右键会话编辑 / 删除");
     } else {
         egui::ScrollArea::vertical().show(ui, |ui| {
             for folder in &wb.folders {
-                show_folder(ui, wb, folder, &folder.name, &mut opened);
+                show_folder(ui, wb, folder, &folder.name, &mut opened, &mut actions);
             }
         });
     }
 
-    opened
+    if let Some(s) = opened {
+        actions.push(SidebarAction::OpenSession(s));
+    }
+    actions
 }
 
 /// 渲染工作区：标签栏 + 终端。
@@ -257,9 +611,12 @@ pub fn show_workspace(
             if resp.clicked() {
                 wb.active_tab = i;
             }
-            // 关闭按钮。
+            // 关闭按钮（SSH 标签同时关闭 live shell 运行时）。
             let close = ui.small_button("×");
             if close.clicked() {
+                if let TabKind::Ssh(s) = &wb.tabs[i].kind {
+                    crate::ssh_tab::close_runtime(s);
+                }
                 closed = Some(i);
             }
             ui.add_space(4.0);
@@ -297,7 +654,33 @@ pub fn show_workspace(
         let th = rows as f32 * ch / ppi;
         let term_rect = egui::Rect::from_min_size(rect.min, egui::Vec2::new(tw, th));
 
-        // 拖放：文件拖到终端 = 上传。
+        // SSH 标签：按阶段渲染（认证表单 / 指纹确认 / 运行终端）。
+        if let TabKind::Ssh(state) = &wb.tabs[wb.active_tab].kind {
+            let state = state.clone();
+            let running = matches!(
+                state.lock().unwrap().phase,
+                crate::ssh_tab::SshPhase::Running { .. }
+            );
+            if running {
+                let rid = match &state.lock().unwrap().phase {
+                    crate::ssh_tab::SshPhase::Running { runtime_id } => runtime_id.clone(),
+                    _ => unreachable!(),
+                };
+                crate::ssh_tab::report_resize(&state, cols as u32, rows as u32);
+                let callback = TerminalCallback { model: model.clone(), renderer: renderer.clone() };
+                ui.painter().add(egui::Shape::Callback(egui_wgpu::Callback::new_paint_callback(
+                    term_rect,
+                    callback,
+                )));
+                capture_terminal_input(ui, &rid, term_rect);
+            } else {
+                let mut st = state.lock().unwrap();
+                render_ssh_phase_ui(ui, &mut st, &state, &model);
+            }
+            return closed;
+        }
+
+        // 本地终端：拖放上传 + 渲染。
         let drop_resp = ui.interact(term_rect, egui::Id::new("term-drop"), egui::Sense::hover());
         if let Some(payload) = egui::DragAndDrop::payload::<FilePayload>(ui.ctx()) {
             if drop_resp.hovered() && ui.input(|i| i.pointer.any_released()) {
@@ -318,6 +701,127 @@ pub fn show_workspace(
     }
 
     closed
+}
+
+/// SSH 标签的非运行阶段 UI：认证表单 / 指纹确认 / 失败重试。
+fn render_ssh_phase_ui(
+    ui: &mut egui::Ui,
+    st: &mut crate::ssh_tab::SshTabState,
+    state: &Arc<Mutex<crate::ssh_tab::SshTabState>>,
+    model: &Arc<Mutex<TerminalModel>>,
+) {
+    use crate::ssh_tab::SshPhase;
+    match &st.phase {
+        SshPhase::Auth => {
+            ui.add_space(12.0);
+            ui.heading("SSH 连接");
+            ui.label(format!("{}:{}", st.host, st.port));
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label("用户名");
+                ui.text_edit_singleline(&mut st.username);
+            });
+            ui.horizontal(|ui| {
+                ui.label("密码");
+                ui.add(egui::TextEdit::singleline(&mut st.password).password(true));
+            });
+            ui.checkbox(&mut st.use_agent, "使用 SSH Agent");
+            ui.add_space(6.0);
+            if ui.button("连接").clicked() {
+                let s = state.clone();
+                let m = model.clone();
+                crate::ssh_tab::begin_connect(&s, m);
+            }
+        }
+        SshPhase::Busy(message) => {
+            ui.add_space(16.0);
+            ui.label(format!("⏳ {message}"));
+        }
+        SshPhase::ConfirmHostKey {
+            fingerprint,
+            previous,
+            ..
+        } => {
+            ui.add_space(12.0);
+            ui.heading("主机密钥确认");
+            if previous.is_some() {
+                ui.colored_label(egui::Color32::from_rgb(220, 90, 90), "⚠ 主机密钥已变更！");
+                ui.label("如果这是你预期的变更，请选择「信任并连接」。");
+            } else {
+                ui.label("首次连接该主机，请核对指纹：");
+            }
+            ui.add_space(6.0);
+            ui.label(format!("SHA256: {fingerprint}"));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("信任并连接").clicked() {
+                    let s = state.clone();
+                    let m = model.clone();
+                    crate::ssh_tab::confirm_host_key(&s, m);
+                }
+                if ui.button("取消").clicked() {
+                    st.phase = SshPhase::Auth;
+                }
+            });
+        }
+        SshPhase::Failed { message } => {
+            ui.add_space(12.0);
+            ui.colored_label(egui::Color32::from_rgb(220, 90, 90), format!("连接失败: {message}"));
+            ui.add_space(6.0);
+            if ui.button("返回").clicked() {
+                st.phase = SshPhase::Auth;
+            }
+        }
+        SshPhase::Closed => {
+            ui.add_space(16.0);
+            ui.label("会话已关闭");
+        }
+        SshPhase::Running { .. } => {}
+    }
+}
+
+/// 捕获键盘输入并写入 core（SSH live shell 输入方向）。
+fn capture_terminal_input(
+    ui: &mut egui::Ui,
+    runtime_id: &str,
+    term_rect: egui::Rect,
+) {
+    let resp = ui.interact(term_rect, egui::Id::new("term-ssh-input"), egui::Sense::click());
+    if resp.clicked() {
+        resp.request_focus();
+    }
+    if !resp.has_focus() {
+        return;
+    }
+    let events: Vec<egui::Event> = ui.input(|i| i.events.clone());
+    let modifiers = ui.input(|i| i.modifiers);
+    let mut bytes: Vec<u8> = Vec::new();
+    for ev in events {
+        match ev {
+            egui::Event::Text(t) => {
+                // Ctrl/⌘ 组合键由 Key 分支处理（避免控制字符重复发送）。
+                if !modifiers.ctrl && !modifiers.command {
+                    bytes.extend_from_slice(t.as_bytes());
+                }
+            }
+            egui::Event::Key {
+                key,
+                pressed,
+                modifiers,
+                ..
+            } => {
+                if pressed {
+                    if let Some(b) = crate::ssh_tab::terminal_key_bytes(key, modifiers) {
+                        bytes.extend_from_slice(&b);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if !bytes.is_empty() {
+        let _ = stacio_core_bridge::CoreHandle::new().write_input(runtime_id, bytes);
+    }
 }
 
 /// 渲染 Inspector：7 段 + 内容。
