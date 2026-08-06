@@ -14,6 +14,8 @@ case "$PLATFORM" in
     # png → ico（magick 或 icoutils）。CI 安装 imagemagick。
     magick "$ROOT/assets/icons/stacio-256.png" stacio.ico 2>/dev/null || \
       python3 -c "import struct,sys; sys.exit(0)"  # 占位：无 magick 时 NSIS 跳过图标
+    # NSIS（choco 部署到 C:\Program Files (x86)\NSIS）需加入 PATH。
+    export PATH="$PATH:/c/Program Files (x86)/NSIS:/c/ProgramData/chocolatey/bin"
     makensis installer.nsi
     echo "产物：$ROOT/packaging/windows/StacioSetup-$VERSION.exe"
     ;;
