@@ -30,6 +30,23 @@ fn load_window_icon() -> Option<Icon> {
     Icon::from_rgba(img.into_raw(), w, h).ok()
 }
 
+/// 加载 License 快照：debug 构建自动解锁全部功能（便于开发门控功能）；
+/// 也可用 `STACIO_LICENSE_FILE` 导入签名授权文件。
+fn load_license() -> stacio_license::LicenseSnapshot {
+    #[cfg(debug_assertions)]
+    if std::env::var("STACIO_LICENSE_DEV").unwrap_or_default() == "0" {
+        // 显式关闭 dev 解锁，走正式导入路径。
+    } else {
+        return stacio_license::dev_unlock();
+    }
+    if let Ok(path) = std::env::var("STACIO_LICENSE_FILE") {
+        if let Ok(snap) = stacio_license::import_license_file(&path) {
+            return snap;
+        }
+    }
+    stacio_license::load()
+}
+
 pub fn run() -> anyhow::Result<()> {
     env_logger::init();
 
@@ -105,6 +122,10 @@ struct App {
 
     // 终端字号（P4-9：Ctrl+滚轮缩放，功能清单 2.14）
     font_size: f32,
+
+    // License（P4-12）：功能门控快照 + 授权窗口开关
+    license: stacio_license::LicenseSnapshot,
+    license_window_open: bool,
 }
 
 impl App {
@@ -136,6 +157,8 @@ impl App {
             search_idx: 0,
             search_total: 0,
             font_size: 13.0,
+            license: load_license(),
+            license_window_open: false,
         }
     }
 
@@ -385,6 +408,14 @@ impl App {
                             }
                         }
                     }
+                    // 授权窗口入口（显示状态徽标）。
+                    let lic_status = match self.license.status {
+                        stacio_license::LicenseStatus::Active => "已授权",
+                        _ => "未授权",
+                    };
+                    if ui.small_button(format!("🔑 {lic_status}")).clicked() {
+                        self.license_window_open = true;
+                    }
                 });
             });
 
@@ -455,7 +486,88 @@ impl App {
             }
         }
 
+        // 授权窗口（状态 / 功能门控 / 导入 / 开发签名）。
+        self.show_license_window(ui.ctx());
+
         self.workbench = Some(wb);
+    }
+
+    /// 授权窗口：展示状态、entitlements、导入授权文件、生成离线申请。
+    fn show_license_window(&mut self, ctx: &egui::Context) {
+        if !self.license_window_open {
+            return;
+        }
+        egui::Window::new("授权")
+            .collapsible(false)
+            .open(&mut self.license_window_open)
+            .show(ctx, |ui| {
+                let s = &self.license;
+                let status_label = match s.status {
+                    stacio_license::LicenseStatus::Active => "已激活",
+                    stacio_license::LicenseStatus::Expired => "已过期",
+                    stacio_license::LicenseStatus::Suspended => "已暂停",
+                    stacio_license::LicenseStatus::Revoked => "已吊销",
+                    _ => "未授权",
+                };
+                ui.label(format!("状态：{status_label}"));
+                ui.label(format!("用户：{}", if s.username.is_empty() { "—" } else { &s.username }));
+                ui.label(format!("套餐：{}", if s.plan.is_empty() { "—" } else { &s.plan }));
+                ui.label(format!("设备：{}", &s.device_fingerprint[..s.device_fingerprint.len().min(24)]));
+                ui.separator();
+                ui.label("功能许可：");
+                for f in stacio_license::ALL_FEATURES {
+                    let on = s.is_enabled(f);
+                    ui.label(format!("  {} {}", if on { "✅" } else { "❌" }, f.label()));
+                }
+                ui.separator();
+                // 导入授权文件。
+                if ui.button("导入授权文件…").clicked() {
+                    let adapter = stacio_platform::default_adapter();
+                    if let Some(path) = adapter.pick_file("选择授权文件") {
+                        match stacio_license::import_license_file(&path) {
+                            Ok(snap) => {
+                                self.license = snap;
+                                log::info!("授权导入成功");
+                            }
+                            Err(e) => log::warn!("授权导入失败: {e}"),
+                        }
+                    }
+                }
+                // 生成离线申请（保存为 JSON 信封）。
+                if ui.button("导出离线申请…").clicked() {
+                    let adapter = stacio_platform::default_adapter();
+                    if let Some(path) = adapter.save_file("保存离线申请", "stacio-offline-request.json") {
+                        match stacio_license::generate_offline_request() {
+                            Ok(text) => {
+                                if let Err(e) = std::fs::write(&path, text.as_bytes()) {
+                                    log::warn!("写入申请失败: {e}");
+                                }
+                            }
+                            Err(e) => log::warn!("生成申请失败: {e}"),
+                        }
+                    }
+                }
+                // dev 调试：生成测试授权（仅 debug 构建）。
+                #[cfg(debug_assertions)]
+                {
+                    ui.separator();
+                    if ui.button("（调试）生成本机测试授权").clicked() {
+                        let path = std::env::temp_dir().join("stacio-dev-license.json");
+                        if let Err(e) = stacio_license::dev_sign_license(
+                            path.to_str().unwrap(),
+                            "dev",
+                            "dev@local",
+                            "enterprise",
+                            "multiExec,aiAgent,bastionHost,sshTunnel,advancedMetrics,fileSync,proxyJump,sessionBulkIO",
+                        ) {
+                            log::warn!("生成失败: {e}");
+                        } else if let Ok(snap) = stacio_license::import_license_file(path.to_str().unwrap()) {
+                            self.license = snap;
+                            log::info!("测试授权已导入");
+                        }
+                    }
+                }
+            });
     }
 
     fn avg_frame_ms(&self) -> f64 {

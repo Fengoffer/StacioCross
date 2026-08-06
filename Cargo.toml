@@ -5,6 +5,7 @@ members = [
     "crates/term",
     "crates/platform",
     "crates/core-bridge",
+    "crates/license",
 ]
 
 # stacio_core 是纯路径依赖，不作为 workspace 成员构建。
