@@ -604,7 +604,7 @@ impl App {
                         snap.system.kernel_release
                     ));
                     ui.label(format!("CPU 型号：{}", snap.system.cpu_model));
-                    let cpu = snap.cpu;
+                    let cpu = &snap.cpu;
                     let cpu_pct = if cpu.total_ticks > 0 {
                         100.0 - (cpu.idle_ticks as f64 / cpu.total_ticks as f64 * 100.0)
                     } else {
