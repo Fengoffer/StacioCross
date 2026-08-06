@@ -140,6 +140,13 @@ fn hex(hex: u32) -> [f32; 3] {
     ]
 }
 
+/// 终端搜索命中高亮色（琥珀色，多数深色主题下可见）。
+const SEARCH_HIGHLIGHT: Rgb = Rgb {
+    r: 0x9a,
+    g: 0x6a,
+    b: 0x00,
+};
+
 impl Default for Palette {
     fn default() -> Self {
         Self {
@@ -665,6 +672,9 @@ pub struct TerminalRenderer {
     metrics: FontMetrics,
     atlas: GlyphAtlas,
 
+    /// 终端搜索匹配（P4-6），绘制时高亮命中单元格。
+    search_matches: Vec<crate::model::SearchMatch>,
+
     bg_buffer: wgpu::Buffer,
     glyph_buffer: wgpu::Buffer,
     bg_len: usize,
@@ -846,6 +856,7 @@ impl TerminalRenderer {
             fonts,
             metrics,
             atlas,
+            search_matches: Vec::new(),
             bg_buffer,
             glyph_buffer,
             bg_len: 0,
@@ -888,6 +899,11 @@ impl TerminalRenderer {
     /// 切换主题（替换渲染调色板，下一帧生效）。
     pub fn set_palette(&mut self, palette: Palette) {
         self.palette = palette;
+    }
+
+    /// 设置终端搜索匹配（空 = 无高亮）。
+    pub fn set_search_matches(&mut self, matches: Vec<crate::model::SearchMatch>) {
+        self.search_matches = matches;
     }
 
     /// 当前调色板。
@@ -946,7 +962,9 @@ impl TerminalRenderer {
             let point = idx.point;
             let cell = &idx.cell;
             let x = point.column.0 as f32 * cw;
-            let y = point.line.0 as f32 * ch;
+            // display_offset 归一化：滚动后 display_iter 产出的行号为负（原始网格行），
+            // 加上 offset 后落在 0..rows 视口内。
+            let y = (point.line.0 + display_offset as i32) as f32 * ch;
 
             let mut fg = cell.fg;
             let mut cell_bg = cell.bg;
@@ -955,7 +973,17 @@ impl TerminalRenderer {
             }
 
             let fg_rgb = palette.resolve(colors, &fg);
-            let bg_rgb = palette.resolve(colors, &cell_bg);
+            let mut bg_rgb = palette.resolve(colors, &cell_bg);
+
+            // 搜索高亮：命中单元格背景改为高亮色。
+            let col = point.column.0;
+            let in_search = self
+                .search_matches
+                .iter()
+                .any(|m| m.line == point.line.0 && col >= m.start_col && col < m.end_col);
+            if in_search {
+                bg_rgb = SEARCH_HIGHLIGHT;
+            }
 
             // 背景：仅当与屏幕底色不同才发矩形。
             if bg_rgb != screen_bg {
