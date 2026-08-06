@@ -683,6 +683,23 @@ impl TerminalModel {
         use alacritty_terminal::index::{Column, Line, Point};
         self.term.scroll_to_point(Point::new(Line(m.line), Column(m.start_col)));
     }
+
+    /// 导出可见区域纯文本（每行去尾部空格，行间 \n）。用于"保存输出"（功能清单 2.24）。
+    pub fn dump_visible_text(&self) -> String {
+        let content = self.term.renderable_content();
+        let mut lines: std::collections::BTreeMap<i32, String> = Default::default();
+        for idx in content.display_iter {
+            lines
+                .entry(idx.point.line.0)
+                .or_default()
+                .push(idx.cell.c);
+        }
+        lines
+            .into_values()
+            .map(|s| s.trim_end().to_owned())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 }
 
 /// 终端搜索匹配（显示坐标系）。

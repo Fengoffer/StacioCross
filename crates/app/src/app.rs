@@ -102,6 +102,9 @@ struct App {
     search_query: String,
     search_idx: usize,
     search_total: usize,
+
+    // 终端字号（P4-9：Ctrl+滚轮缩放，功能清单 2.14）
+    font_size: f32,
 }
 
 impl App {
@@ -132,6 +135,7 @@ impl App {
             search_query: String::new(),
             search_idx: 0,
             search_total: 0,
+            font_size: 13.0,
         }
     }
 
@@ -368,6 +372,19 @@ impl App {
                     } else {
                         ui.label("0/0");
                     }
+                    ui.separator();
+                    // 保存终端输出（功能清单 2.24）。
+                    if ui.small_button("💾 保存输出").clicked() {
+                        if let Some(model) = wb.active_model() {
+                            let text = model.lock().unwrap().dump_visible_text();
+                            let adapter = stacio_platform::default_adapter();
+                            if let Some(path) = adapter.save_file("保存终端输出为", "terminal-output.txt") {
+                                if let Err(e) = std::fs::write(&path, text.as_bytes()) {
+                                    log::warn!("保存输出失败: {e}");
+                                }
+                            }
+                        }
+                    }
                 });
             });
 
@@ -424,6 +441,17 @@ impl App {
             if let Some(model) = wb.active_model() {
                 let m = matches[self.search_idx];
                 model.lock().unwrap().scroll_to_match(&m);
+            }
+        }
+
+        // Ctrl+滚轮缩放终端字号（功能清单 2.14）。
+        let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+        let ctrl = ui.input(|i| i.modifiers.ctrl || i.modifiers.command);
+        if ctrl && scroll.abs() > 0.5 {
+            self.font_size = (self.font_size + scroll.signum()).clamp(8.0, 32.0);
+            if let Ok(mut r) = renderer.lock() {
+                let dpi = self.window.as_ref().map(|w| w.scale_factor() as f32).unwrap_or(1.0);
+                r.set_font_size(self.font_size, dpi);
             }
         }
 

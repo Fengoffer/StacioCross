@@ -62,6 +62,8 @@ pub struct SshTabState {
     /// Serial 波特率。
     pub baud_rate: u32,
     pub phase: SshPhase,
+    /// 待确认的多行粘贴内容（功能清单 2.18）。
+    pub pending_paste: Option<String>,
     /// 已上报 core 的尺寸（避免每帧重复 record_resize）。
     pub last_report_cols: u32,
     pub last_report_rows: u32,
@@ -80,6 +82,7 @@ impl SshTabState {
             use_agent: false,
             baud_rate: 115_200,
             phase: SshPhase::Auth,
+            pending_paste: None,
             last_report_cols: 0,
             last_report_rows: 0,
             poll_stop: Arc::new(AtomicBool::new(false)),

@@ -854,7 +854,41 @@ fn render_pane(
                 term_rect,
                 callback,
             )));
-            capture_terminal_input(ui, &rid, term_rect);
+            capture_terminal_input(ui, &state, &rid, term_rect);
+            // 多行粘贴确认对话框（功能清单 2.18）。
+            let paste = state.lock().unwrap().pending_paste.clone();
+            if let Some(clip) = paste {
+                let mut ok = false;
+                let mut cancel = false;
+                egui::Window::new("多行粘贴确认")
+                    .collapsible(false)
+                    .resizable(false)
+                    .show(ui.ctx(), |ui| {
+                        ui.label(format!("将粘贴 {} 行内容到终端：", clip.lines().count()));
+                        ui.add_space(4.0);
+                        let preview: String = clip.lines().take(5).collect::<Vec<_>>().join("\n");
+                        ui.label(&preview);
+                        if clip.lines().count() > 5 {
+                            ui.weak(format!("…（共 {} 行）", clip.lines().count()));
+                        }
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("粘贴").clicked() {
+                                ok = true;
+                            }
+                            if ui.button("取消").clicked() {
+                                cancel = true;
+                            }
+                        });
+                    });
+                if ok {
+                    let _ = stacio_core_bridge::CoreHandle::new().write_input(&rid, clip.into_bytes());
+                    state.lock().unwrap().pending_paste = None;
+                }
+                if cancel {
+                    state.lock().unwrap().pending_paste = None;
+                }
+            }
         } else {
             let mut st = state.lock().unwrap();
             render_ssh_phase_ui(ui, &mut st, &state, &model);
@@ -984,8 +1018,10 @@ fn render_ssh_phase_ui(
 }
 
 /// 捕获键盘输入并写入 core（SSH live shell 输入方向）。
+/// 多行粘贴（功能清单 2.18）：Cmd/Ctrl+V 时若剪贴板含多行，存 pending_paste 待确认。
 fn capture_terminal_input(
     ui: &mut egui::Ui,
+    state: &Arc<Mutex<crate::ssh_tab::SshTabState>>,
     runtime_id: &str,
     term_rect: egui::Rect,
 ) {
@@ -999,6 +1035,7 @@ fn capture_terminal_input(
     let events: Vec<egui::Event> = ui.input(|i| i.events.clone());
     let modifiers = ui.input(|i| i.modifiers);
     let mut bytes: Vec<u8> = Vec::new();
+    let mut pending_multi: Option<String> = None;
     for ev in events {
         match ev {
             egui::Event::Text(t) => {
@@ -1019,9 +1056,24 @@ fn capture_terminal_input(
                     }
                 }
             }
+            // 粘贴事件：egui 已从系统剪贴板取到文本。
+            egui::Event::Paste(clip) => {
+                if clip.lines().count() > 1 {
+                    // 多行：暂存待确认。
+                    pending_multi = Some(clip);
+                } else {
+                    bytes.extend_from_slice(clip.as_bytes());
+                }
+            }
             _ => {}
         }
     }
+
+    // 多行粘贴待确认（对话框在 render_pane Running 分支弹）。
+    if let Some(clip) = pending_multi {
+        state.lock().unwrap().pending_paste = Some(clip);
+    }
+
     if !bytes.is_empty() {
         let _ = stacio_core_bridge::CoreHandle::new().write_input(runtime_id, bytes);
     }
