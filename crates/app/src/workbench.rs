@@ -509,7 +509,11 @@ impl Workbench {
             if let Some((name, preview)) = self.import_preview.take() {
                 let handle = stacio_core_bridge::CoreHandle::new();
                 match handle.apply_session_import("csv", &name, preview) {
-                    Ok(result) => log::info!("导入完成：{} 个会话", result.imported_count),
+                    Ok(result) => log::info!(
+                        "导入完成：{} 个会话（跳过 {}）",
+                        result.report.imported_count,
+                        result.report.skipped_count
+                    ),
                     Err(e) => log::warn!("导入失败: {e}"),
                 }
                 self.reload_sessions();
