@@ -5153,6 +5153,7 @@ dependencies = [
  "egui-wgpu",
  "egui-winit",
  "env_logger",
+ "image",
  "log",
  "png 0.17.16",
  "pollster",

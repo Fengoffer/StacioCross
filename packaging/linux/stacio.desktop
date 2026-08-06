@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Stacio
+Name[zh_CN]=Stacio
+GenericName=SSH 终端
+GenericName[en]=SSH Terminal
+Comment=跨平台 SSH / SFTP 客户端
+Comment[zh_CN]=跨平台 SSH / SFTP 客户端
+Exec=/usr/bin/stacio
+Icon=stacio
+Terminal=false
+Categories=Network;System;Utility;
+Keywords=ssh;sftp;terminal;remote;
+StartupWMClass=Stacio
