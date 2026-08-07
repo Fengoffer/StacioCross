@@ -407,7 +407,8 @@ pub mod themes {
     }
 
     /// 主题表：(名称, 构造器)。
-    pub const THEMES: &[(&str, fn() -> Palette)] = &[
+    pub type ThemeEntry = (&'static str, fn() -> Palette);
+    pub const THEMES: &[ThemeEntry] = &[
         ("Stacio Dark", stacio_dark),
         ("Solarized Dark", solarized_dark),
         ("Nord", nord),

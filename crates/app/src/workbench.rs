@@ -859,7 +859,8 @@ pub fn show_workspace(
     let n_panes = tab.panes.len();
     let split = tab.split;
     // 克隆窗格的 Arc 引用，避免在渲染时再借用 wb.tabs / wb.uploads。
-    let pane_models: Vec<(Arc<Mutex<TerminalModel>>, Option<Arc<Mutex<crate::ssh_tab::SshTabState>>>)> = tab
+    type PaneRef = (Arc<Mutex<TerminalModel>>, Option<Arc<Mutex<crate::ssh_tab::SshTabState>>>);
+    let pane_models: Vec<PaneRef> = tab
         .panes
         .iter()
         .map(|p| (p.model.clone(), p.ssh.clone()))
@@ -1153,24 +1154,22 @@ fn capture_terminal_input(
     let mut pending_multi: Option<String> = None;
     for ev in events {
         match ev {
-            egui::Event::Text(t) => {
+            egui::Event::Text(t)
                 // Ctrl/⌘ 组合键由 Key 分支处理（避免控制字符重复发送）。
-                if !modifiers.ctrl && !modifiers.command {
+                if !modifiers.ctrl && !modifiers.command => {
                     bytes.extend_from_slice(t.as_bytes());
                 }
-            }
             egui::Event::Key {
                 key,
                 pressed,
                 modifiers,
                 ..
-            } => {
-                if pressed {
+            }
+                if pressed => {
                     if let Some(b) = crate::ssh_tab::terminal_key_bytes(key, modifiers) {
                         bytes.extend_from_slice(&b);
                     }
                 }
-            }
             // 粘贴事件：egui 已从系统剪贴板取到文本。
             egui::Event::Paste(clip) => {
                 if clip.lines().count() > 1 {
