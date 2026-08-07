@@ -240,6 +240,7 @@ mod secure_token {
         super::license_path().with_file_name("license-token.bin")
     }
 
+    #[cfg(test)]
     pub fn clear() {
         let adapter = stacio_platform::default_adapter();
         let _ = adapter.delete(SERVICE, ACCOUNT);
