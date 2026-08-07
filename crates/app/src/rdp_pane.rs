@@ -45,7 +45,7 @@ impl RdpSessionDelegate for RdpDelegate {
         bgra: Vec<u8>,
     ) {
         // PoC：保存整帧（脏矩形合并为整帧上传）。
-        *self.shared.frame.lock().unwrap() = Some((desktop_width, desktop_height, bgra));
+        *self.shared.frame.lock().unwrap_or_else(|e| e.into_inner()) = Some((desktop_width, desktop_height, bgra));
         self.ctx.request_repaint();
     }
     fn on_pointer_visibility(&self, _visible: bool) {}
@@ -54,8 +54,8 @@ impl RdpSessionDelegate for RdpDelegate {
     fn on_clipboard(&self, _text: String) {}
     fn on_network_status(&self, _rtt_ms: u32, _mode: String) {}
     fn on_disconnected(&self, reason: String) {
-        *self.shared.status.lock().unwrap() = format!("已断开：{reason}");
-        *self.shared.disconnected_reason.lock().unwrap() = Some(reason);
+        *self.shared.status.lock().unwrap_or_else(|e| e.into_inner()) = format!("已断开：{reason}");
+        *self.shared.disconnected_reason.lock().unwrap_or_else(|e| e.into_inner()) = Some(reason);
         self.ctx.request_repaint();
     }
 }
@@ -93,7 +93,7 @@ impl RdpPaneState {
         let username = self.username.clone();
         let password = self.password.clone();
         let shared = self.shared.clone();
-        *shared.status.lock().unwrap() = "连接中…".to_owned();
+        *shared.status.lock().unwrap_or_else(|e| e.into_inner()) = "连接中…".to_owned();
         let delegate: Box<dyn RdpSessionDelegate> =
             Box::new(RdpDelegate { shared: shared.clone(), ctx: ctx.clone() });
         session.clone().connect(

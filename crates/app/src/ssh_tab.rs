@@ -210,13 +210,13 @@ pub fn begin_connect(state: &Arc<Mutex<SshTabState>>, model: Arc<Mutex<TerminalM
     let st = state.clone();
     std::thread::spawn(move || {
         // Telnet / Serial：直接连接。
-        if st.lock().unwrap().kind != ShellKind::Ssh {
+        if st.lock().unwrap_or_else(|e| e.into_inner()).kind != ShellKind::Ssh {
             do_connect(&st, model, None);
             return;
         }
 
         let config = {
-            let s = st.lock().unwrap();
+            let s = st.lock().unwrap_or_else(|e| e.into_inner());
             s.config()
         };
 
@@ -224,7 +224,7 @@ pub fn begin_connect(state: &Arc<Mutex<SshTabState>>, model: Arc<Mutex<TerminalM
         let observed = match handle.probe_host_key(config.clone()) {
             Ok(key) => key,
             Err(e) => {
-                st.lock().unwrap().set_phase(SshPhase::Failed {
+                st.lock().unwrap_or_else(|e| e.into_inner()).set_phase(SshPhase::Failed {
                     message: format!("探测主机密钥失败: {e}"),
                 });
                 return;
@@ -244,21 +244,21 @@ pub fn begin_connect(state: &Arc<Mutex<SshTabState>>, model: Arc<Mutex<TerminalM
                 do_connect(&st, model, Some(fingerprint));
             }
             Err(SshRuntimeError::UnknownHostKey) => {
-                st.lock().unwrap().set_phase(SshPhase::ConfirmHostKey {
+                st.lock().unwrap_or_else(|e| e.into_inner()).set_phase(SshPhase::ConfirmHostKey {
                     fingerprint,
                     raw_key: observed.raw_key,
                     previous: None,
                 });
             }
             Err(SshRuntimeError::HostKeyChanged { previous_fingerprint_sha256 }) => {
-                st.lock().unwrap().set_phase(SshPhase::ConfirmHostKey {
+                st.lock().unwrap_or_else(|e| e.into_inner()).set_phase(SshPhase::ConfirmHostKey {
                     fingerprint,
                     raw_key: observed.raw_key,
                     previous: Some(previous_fingerprint_sha256),
                 });
             }
             Err(e) => {
-                st.lock().unwrap().set_phase(SshPhase::Failed {
+                st.lock().unwrap_or_else(|e| e.into_inner()).set_phase(SshPhase::Failed {
                     message: format!("主机密钥校验失败: {e}"),
                 });
             }
@@ -275,7 +275,7 @@ pub fn confirm_host_key(
     let st = state.clone();
     std::thread::spawn(move || {
         let (host, port, fingerprint, raw_key, previous) = {
-            let s = st.lock().unwrap();
+            let s = st.lock().unwrap_or_else(|e| e.into_inner());
             match &s.phase {
                 SshPhase::ConfirmHostKey {
                     fingerprint,
@@ -301,7 +301,7 @@ pub fn confirm_host_key(
         match handle.apply_host_key_decision(&host, port, raw_key, decision) {
             Ok(_) => do_connect(&st, model, Some(fingerprint)),
             Err(e) => {
-                st.lock().unwrap().set_phase(SshPhase::Failed {
+                st.lock().unwrap_or_else(|e| e.into_inner()).set_phase(SshPhase::Failed {
                     message: format!("主机密钥确认失败: {e}"),
                 });
             }
@@ -318,20 +318,20 @@ fn do_connect(
     let handle = CoreHandle::new();
     let st = state.clone();
     let (cols, rows) = {
-        let m = model.lock().unwrap();
+        let m = model.lock().unwrap_or_else(|e| e.into_inner());
         let sz = m.size();
         (sz.columns as u32, sz.rows as u32)
     };
 
-    st.lock().unwrap().set_phase(SshPhase::Busy("连接中…".to_owned()));
+    st.lock().unwrap_or_else(|e| e.into_inner()).set_phase(SshPhase::Busy("连接中…".to_owned()));
 
     let outcome = {
-        let s = st.lock().unwrap();
+        let s = st.lock().unwrap_or_else(|e| e.into_inner());
         match s.kind {
             ShellKind::Ssh => {
                 let Some(secret) = s.secret() else {
                     drop(s);
-                    st.lock().unwrap().set_phase(SshPhase::Failed {
+                    st.lock().unwrap_or_else(|e| e.into_inner()).set_phase(SshPhase::Failed {
                         message: "未提供认证信息（密码为空且未选 Agent）".to_owned(),
                     });
                     return;
@@ -373,7 +373,7 @@ fn do_connect(
     match outcome {
         Ok(LiveShellStatus { runtime_id, status, .. }) if status == "running" => {
             let keepalive = {
-                let mut s = st.lock().unwrap();
+                let mut s = st.lock().unwrap_or_else(|e| e.into_inner());
                 s.phase = SshPhase::Running {
                     runtime_id: runtime_id.clone(),
                 };
@@ -389,12 +389,12 @@ fn do_connect(
             spawn_output_pump(&st, model, runtime_id);
         }
         Ok(status) => {
-            st.lock().unwrap().set_phase(SshPhase::Failed {
+            st.lock().unwrap_or_else(|e| e.into_inner()).set_phase(SshPhase::Failed {
                 message: format!("连接失败: {} ({})", status.diagnostic, status.status),
             });
         }
         Err(e) => {
-            st.lock().unwrap().set_phase(SshPhase::Failed {
+            st.lock().unwrap_or_else(|e| e.into_inner()).set_phase(SshPhase::Failed {
                 message: format!("连接失败: {e}"),
             });
         }
@@ -410,7 +410,7 @@ fn spawn_output_pump(
     let handle = CoreHandle::new();
     let st = state.clone();
     let stop = {
-        let s = st.lock().unwrap();
+        let s = st.lock().unwrap_or_else(|e| e.into_inner());
         s.poll_stop.clone()
     };
     std::thread::spawn(move || {
@@ -434,13 +434,13 @@ fn spawn_output_pump(
             }
             match handle.poll_ssh_shell(&runtime_id) {
                 Ok(s) if s.status == "failed" => {
-                    st.lock().unwrap().set_phase(SshPhase::Failed {
+                    st.lock().unwrap_or_else(|e| e.into_inner()).set_phase(SshPhase::Failed {
                         message: s.diagnostic,
                     });
                     break;
                 }
                 Ok(s) if s.status == "closed" => {
-                    st.lock().unwrap().set_phase(SshPhase::Closed);
+                    st.lock().unwrap_or_else(|e| e.into_inner()).set_phase(SshPhase::Closed);
                     break;
                 }
                 Ok(_) => {}
@@ -454,7 +454,7 @@ fn spawn_output_pump(
 /// 关闭 SSH 运行时（标签关闭时调用）。
 pub fn close_runtime(state: &Arc<Mutex<SshTabState>>) {
     let (stop, runtime_id) = {
-        let s = state.lock().unwrap();
+        let s = state.lock().unwrap_or_else(|e| e.into_inner());
         (
             s.poll_stop.clone(),
             match &s.phase {
@@ -471,7 +471,7 @@ pub fn close_runtime(state: &Arc<Mutex<SshTabState>>) {
 
 /// 报告尺寸变更（仅在变化时调 core 的 record_resize）。
 pub fn report_resize(state: &Arc<Mutex<SshTabState>>, cols: u32, rows: u32) {
-    let mut s = state.lock().unwrap();
+    let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
     if s.last_report_cols == cols && s.last_report_rows == rows {
         return;
     }
