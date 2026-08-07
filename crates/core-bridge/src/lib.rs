@@ -38,6 +38,7 @@ pub use stacio_core::domain::ssh::{
     HostKeyTrustDecision, HostKeyVerification, LiveSshHostKey, SshAuthMethod, SshAuthSecret,
     SshConnectionConfig, SshRuntimeError,
 };
+pub use stacio_core::rdp_session::{RdpSecurityMode, RdpSession, RdpSessionDelegate};
 pub use stacio_core::domain::terminal::{TerminalOutputBatch, TerminalRuntime, TerminalRuntimeError};
 pub use stacio_core::services::live_shell_service::LiveShellStatus;
 
