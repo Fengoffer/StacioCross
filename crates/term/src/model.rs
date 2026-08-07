@@ -108,7 +108,7 @@ impl<'a, T: EventListener> Perform for Performer<'a, T> {
             0x07 => self.term.bell(),
             0x08 => self.term.backspace(),
             0x09 => self.term.put_tab(1),
-            0x0a | 0x0b | 0x0c => self.term.linefeed(),
+            0x0a..=0x0c => self.term.linefeed(),
             0x0d => self.term.carriage_return(),
             _ => {}
         }
@@ -196,13 +196,12 @@ impl<'a, T: EventListener> Perform for Performer<'a, T> {
                 let n = count(params, 0);
                 self.term.scroll_up(n);
             }
-            'T' => {
+            'T'
                 // CSI T 仅单参数时是 SD（向下滚动）；多参数为鼠标滚轮序列，忽略。
-                if params.len() == 1 {
+                if params.len() == 1 => {
                     let n = count(params, 0);
                     self.term.scroll_down(n);
                 }
-            }
             'X' => {
                 let n = count(params, 0);
                 self.term.erase_chars(n);
@@ -263,9 +262,9 @@ impl<'a, T: EventListener> Perform for Performer<'a, T> {
                     self.term.report_mode(public_mode(mode));
                 }
             }
-            'q' => {
+            'q'
                 // DECSCUSR：CSI Ps SP q。shape = Ps - 1，0/1/2 为默认区块，3/4 下划线。
-                if mode_byte == Some(b' ') {
+                if mode_byte == Some(b' ') => {
                     let n = param_or(params, 0, 0);
                     let shape = match n {
                         0..=2 => alacritty_terminal::vte::ansi::CursorShape::Block,
@@ -274,7 +273,6 @@ impl<'a, T: EventListener> Perform for Performer<'a, T> {
                     };
                     self.term.set_cursor_shape(shape);
                 }
-            }
             'r' => {
                 let top = param(params, 0).map(|v| v as usize).unwrap_or(1);
                 let bottom = param(params, 1).map(|v| v as usize);
@@ -448,8 +446,8 @@ fn extended_color(all: &[&[u16]], idx: usize) -> (Option<Color>, usize) {
                 idx + 1,
             );
         }
-        Some(2) => {
-            if sub.len() >= 5 {
+        Some(2)
+            if sub.len() >= 5 => {
                 let color = Color::Spec(alacritty_terminal::vte::ansi::Rgb {
                     r: sub[2] as u8,
                     g: sub[3] as u8,
@@ -457,7 +455,6 @@ fn extended_color(all: &[&[u16]], idx: usize) -> (Option<Color>, usize) {
                 });
                 return (Some(color), idx + 1);
             }
-        }
         _ => {}
     }
     // 分号参数形式。

@@ -478,17 +478,15 @@ impl App {
                         self.license_window_open = true;
                     }
                     // 多执行（功能清单 2.4，License: multiExec）。
-                    if self.license.is_enabled(stacio_license::Feature::MultiExec) {
-                        if ui.small_button("≡ 多执行").clicked() {
+                    if self.license.is_enabled(stacio_license::Feature::MultiExec)
+                        && ui.small_button("≡ 多执行").clicked() {
                             self.multiexec_open = true;
                         }
-                    }
                     // 设备指标（功能清单 6.1，License: advancedMetrics）。
-                    if self.license.is_enabled(stacio_license::Feature::AdvancedMetrics) {
-                        if ui.small_button("📊 设备指标").clicked() {
+                    if self.license.is_enabled(stacio_license::Feature::AdvancedMetrics)
+                        && ui.small_button("📊 设备指标").clicked() {
                             self.metrics_open = true;
                         }
-                    }
                     if ui.small_button("ℹ").clicked() {
                         self.about_open = true;
                     }
@@ -1060,7 +1058,7 @@ impl App {
             .map(|d| (d * 1000.0) as f32)
             .fold(0.0, f32::max);
         // 每 120 帧输出一次性能摘要。
-        if self.frame_samples.len() % 120 == 0 {
+        if self.frame_samples.len().is_multiple_of(120) {
             let mb = self.bytes_fed.load(Ordering::Relaxed) as f64 / 1e6;
             log::info!(
                 "性能: FPS={:.1} 平均={:.2}ms 峰值={:.2}ms 注入={:.1}MB",
@@ -1257,7 +1255,7 @@ fn capture_frame(gpu: &GpuState, texture: &wgpu::Texture) -> anyhow::Result<Vec<
     let width = gpu.surface_config.width;
     let height = gpu.surface_config.height;
     // wgpu 要求 bytes_per_row 256 对齐。
-    let bytes_per_row = ((width * 4) + 255) / 256 * 256;
+    let bytes_per_row = (width * 4).div_ceil(256) * 256;
     let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("stacio-capture"),
         size: (bytes_per_row as u64) * height as u64,
