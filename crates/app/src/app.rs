@@ -170,6 +170,10 @@ struct App {
 
     // 关于窗口（功能清单 6.13）
     about_open: bool,
+
+    // RDP 远程桌面（功能清单 6.7）
+    rdp_open: bool,
+    rdp: crate::rdp_pane::RdpPaneState,
 }
 
 impl App {
@@ -214,6 +218,8 @@ impl App {
             metrics_snapshot: None,
             metrics_error: None,
             about_open: false,
+            rdp_open: false,
+            rdp: crate::rdp_pane::RdpPaneState::new(),
         }
     }
 
@@ -486,6 +492,10 @@ impl App {
                     if ui.small_button("ℹ").clicked() {
                         self.about_open = true;
                     }
+                    // RDP 远程桌面（功能清单 6.7）。
+                    if ui.small_button("🖥 RDP").clicked() {
+                        self.rdp_open = true;
+                    }
                 });
             });
 
@@ -610,7 +620,109 @@ impl App {
                 });
         }
 
+        // RDP 远程桌面窗口（功能清单 6.7）。
+        if self.rdp_open {
+            self.show_rdp_window(ui.ctx());
+        }
+
         self.workbench = Some(wb);
+    }
+
+    /// RDP 窗口：连接表单 + 帧显示 + 输入转发。
+    fn show_rdp_window(&mut self, ctx: &egui::Context) {
+        let mut connect = false;
+        let mut disconnect = false;
+        egui::Window::new("RDP 远程桌面")
+            .open(&mut self.rdp_open)
+            .default_size(egui::Vec2::new(700.0, 560.0))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("主机");
+                    ui.text_edit_singleline(&mut self.rdp.host);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("端口");
+                    ui.add(egui::DragValue::new(&mut self.rdp.port).range(1..=65535));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("用户");
+                    ui.text_edit_singleline(&mut self.rdp.username);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("密码");
+                    ui.add(egui::TextEdit::singleline(&mut self.rdp.password).password(true));
+                });
+                ui.horizontal(|ui| {
+                    if self.rdp.session.is_none() {
+                        if ui.button("连接").clicked() {
+                            connect = true;
+                        }
+                    } else if ui.button("断开").clicked() {
+                        disconnect = true;
+                    }
+                    let status = self.rdp.shared.status.lock().unwrap().clone();
+                    ui.weak(status);
+                });
+                ui.separator();
+                // 帧显示。
+                let (w, h, bgra) = {
+                    let f = self.rdp.shared.frame.lock().unwrap();
+                    match &*f {
+                        Some((w, h, data)) => (*w, *h, data.clone()),
+                        None => (0, 0, Vec::new()),
+                    }
+                };
+                if w > 0 && h > 0 {
+                    // BGRA → RGBA 上传。
+                    let mut rgba = bgra.clone();
+                    for px in rgba.chunks_exact_mut(4) {
+                        px.swap(0, 2);
+                    }
+                    let color_image = egui::ColorImage::from_rgba_unmultiplied(
+                        [w as usize, h as usize],
+                        &rgba,
+                    );
+                    let avail = ui.available_size();
+                    let scale = (avail.x / w as f32).min(avail.y / h as f32).min(1.0);
+                    let size = egui::Vec2::new(w as f32 * scale, h as f32 * scale);
+                    let resp = ui.allocate_ui(size, |ui| {
+                        let handle = self
+                            .rdp
+                            .texture
+                            .get_or_insert_with(|| {
+                                ctx.load_texture("rdp-frame", color_image.clone(), egui::TextureOptions::LINEAR)
+                            });
+                        handle.set(color_image.clone(), egui::TextureOptions::LINEAR);
+                        ui.image((handle.id(), size));
+                        ui.interact(
+                            ui.max_rect(),
+                            egui::Id::new("rdp-canvas"),
+                            egui::Sense::click_and_drag(),
+                        )
+                    });
+                    let inner = resp.inner;
+                    // 鼠标转发。
+                    if let Some(pos) = inner.hover_pos() {
+                        if let Some(s) = &self.rdp.session {
+                            let x = (pos.x / size.x * w as f32) as u32;
+                            let y = (pos.y / size.y * h as f32) as u32;
+                            let buttons = if inner.dragged() { 1 } else { 0 };
+                            s.send_pointer(x, y, buttons);
+                        }
+                    }
+                } else {
+                    ui.small("等待帧…");
+                }
+            });
+        if connect {
+            self.rdp.connect(ctx);
+        }
+        if disconnect {
+            self.rdp.close();
+            self.rdp.session = None;
+            self.rdp.texture = None;
+            *self.rdp.shared.status.lock().unwrap() = "未连接".to_owned();
+        }
     }
 
     /// 设备指标窗口：连接表单 → 探测 → 展示 CPU/内存/磁盘/网络。
@@ -1044,6 +1156,7 @@ impl App {
 
         // 截图（须在 present 之前，纹理内容仍在）。
         self.frame_count += 1;
+        eprintln!("FRAME {}", self.frame_count);
         if let Some(path) = self.screenshot_path.clone() {
             if self.frame_count == 60 {
                 match capture_frame(gpu, &surface_texture.texture) {
