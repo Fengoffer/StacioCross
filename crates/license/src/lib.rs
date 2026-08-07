@@ -493,9 +493,28 @@ fn feature_name(f: Feature) -> &'static str {
 // ---------------------------------------------------------------------------
 
 fn base64(data: &[u8]) -> String {
-    // 无 base64 依赖时的轻量实现：直接用 hex（便于 PoC 调试；正式用 base64）。
-    // 规范用 Base64；此处以 hex 替代并注明。
-    hex::encode(data)
+    // RFC 4648 Base64 编码（规范 §3.1 要求 Base64；无外部依赖的轻量实现）。
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[(n >> 18) as usize & 63] as char);
+        out.push(TABLE[(n >> 12) as usize & 63] as char);
+        if chunk.len() > 1 {
+            out.push(TABLE[(n >> 6) as usize & 63] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(TABLE[n as usize & 63] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
 }
 
 fn chrono_like_now() -> i64 {
@@ -565,4 +584,17 @@ mod tests {
         assert_eq!(loaded.status, LicenseStatus::Unlicensed);
         std::fs::remove_file(license_path()).ok();
     }
+
+    #[test]
+    fn base64_rfc4648_vectors() {
+        // RFC 4648 §10 测试向量。
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foob"), "Zm9vYg==");
+        assert_eq!(base64(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+    }
 }
+
