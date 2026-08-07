@@ -715,7 +715,7 @@ impl App {
         if connect {
             self.rdp.connect(ctx);
         }
-        if disconnect {
+        if disconnect || !self.rdp_open {
             self.rdp.close();
             self.rdp.session = None;
             self.rdp.texture = None;
