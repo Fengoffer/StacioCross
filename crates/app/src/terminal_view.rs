@@ -20,10 +20,10 @@ impl egui_wgpu::CallbackTrait for TerminalCallback {
         _callback_resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
         // 从模型取渲染快照，重建网格并上传。
-        let model = self.model.lock().unwrap();
+        let model = self.model.lock().unwrap_or_else(|e| e.into_inner());
         let size = model.size();
         let content = model.renderable_content();
-        let mut renderer = self.renderer.lock().unwrap();
+        let mut renderer = self.renderer.lock().unwrap_or_else(|e| e.into_inner());
         renderer.prepare(content, size.columns, size.rows);
         Vec::new()
     }
@@ -34,7 +34,7 @@ impl egui_wgpu::CallbackTrait for TerminalCallback {
         render_pass: &mut wgpu::RenderPass<'static>,
         _callback_resources: &egui_wgpu::CallbackResources,
     ) {
-        let renderer = self.renderer.lock().unwrap();
+        let renderer = self.renderer.lock().unwrap_or_else(|e| e.into_inner());
         let viewport = [
             info.viewport.min.x,
             info.viewport.min.y,

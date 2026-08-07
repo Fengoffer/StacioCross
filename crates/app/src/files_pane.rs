@@ -206,7 +206,7 @@ pub fn begin_connect(state: &Arc<Mutex<RemoteFsState>>) {
     let st = state.clone();
     std::thread::spawn(move || {
         let (config, _secret, protocol) = {
-            let s = st.lock().unwrap();
+            let s = st.lock().unwrap_or_else(|e| e.into_inner());
             (s.config(), s.secret(), s.protocol)
         };
         // FTP：无 host key，直接就绪。
@@ -217,7 +217,7 @@ pub fn begin_connect(state: &Arc<Mutex<RemoteFsState>>) {
         let observed = match handle.probe_host_key(config.clone()) {
             Ok(k) => k,
             Err(e) => {
-                st.lock().unwrap().phase = RemoteFsPhase::Failed(format!("探测主机密钥失败: {e}"));
+                st.lock().unwrap_or_else(|e| e.into_inner()).phase = RemoteFsPhase::Failed(format!("探测主机密钥失败: {e}"));
                 return;
             }
         };
@@ -230,21 +230,21 @@ pub fn begin_connect(state: &Arc<Mutex<RemoteFsState>>) {
         ) {
             Ok(_) => finish_connect(&st, fingerprint),
             Err(SshRuntimeError::UnknownHostKey) => {
-                st.lock().unwrap().phase = RemoteFsPhase::ConfirmHostKey {
+                st.lock().unwrap_or_else(|e| e.into_inner()).phase = RemoteFsPhase::ConfirmHostKey {
                     fingerprint,
                     raw_key: observed.raw_key,
                     previous: None,
                 };
             }
             Err(SshRuntimeError::HostKeyChanged { previous_fingerprint_sha256 }) => {
-                st.lock().unwrap().phase = RemoteFsPhase::ConfirmHostKey {
+                st.lock().unwrap_or_else(|e| e.into_inner()).phase = RemoteFsPhase::ConfirmHostKey {
                     fingerprint,
                     raw_key: observed.raw_key,
                     previous: Some(previous_fingerprint_sha256),
                 };
             }
             Err(e) => {
-                st.lock().unwrap().phase = RemoteFsPhase::Failed(format!("主机密钥校验失败: {e}"));
+                st.lock().unwrap_or_else(|e| e.into_inner()).phase = RemoteFsPhase::Failed(format!("主机密钥校验失败: {e}"));
             }
         }
     });
@@ -256,7 +256,7 @@ pub fn confirm_host_key(state: &Arc<Mutex<RemoteFsState>>) {
     let st = state.clone();
     std::thread::spawn(move || {
         let (host, port, fingerprint, raw_key, previous) = {
-            let s = st.lock().unwrap();
+            let s = st.lock().unwrap_or_else(|e| e.into_inner());
             match &s.phase {
                 RemoteFsPhase::ConfirmHostKey {
                     fingerprint,
@@ -281,7 +281,7 @@ pub fn confirm_host_key(state: &Arc<Mutex<RemoteFsState>>) {
         match handle.apply_host_key_decision(&host, port, raw_key, decision) {
             Ok(_) => finish_connect(&st, fingerprint),
             Err(e) => {
-                st.lock().unwrap().phase = RemoteFsPhase::Failed(format!("主机密钥确认失败: {e}"));
+                st.lock().unwrap_or_else(|e| e.into_inner()).phase = RemoteFsPhase::Failed(format!("主机密钥确认失败: {e}"));
             }
         }
     });
@@ -299,14 +299,14 @@ pub fn list_dir(state: &Arc<Mutex<RemoteFsState>>, fingerprint: String, path: St
     let st = state.clone();
     std::thread::spawn(move || {
         let (config, secret, protocol) = {
-            let s = st.lock().unwrap();
+            let s = st.lock().unwrap_or_else(|e| e.into_inner());
             (s.config(), s.secret(), s.protocol)
         };
         let Some(secret) = secret else {
-            st.lock().unwrap().phase = RemoteFsPhase::Failed("未提供认证信息".to_owned());
+            st.lock().unwrap_or_else(|e| e.into_inner()).phase = RemoteFsPhase::Failed("未提供认证信息".to_owned());
             return;
         };
-        st.lock().unwrap().phase = RemoteFsPhase::Busy(format!("列目录 {path}"));
+        st.lock().unwrap_or_else(|e| e.into_inner()).phase = RemoteFsPhase::Busy(format!("列目录 {path}"));
         let result = match protocol {
             FsProtocol::Sftp => {
                 handle.list_sftp_directory(config, secret, &fingerprint, &path)
@@ -324,14 +324,14 @@ pub fn list_dir(state: &Arc<Mutex<RemoteFsState>>, fingerprint: String, path: St
         };
         match result {
             Ok(entries) => {
-                let mut s = st.lock().unwrap();
+                let mut s = st.lock().unwrap_or_else(|e| e.into_inner());
                 s.entries = entries;
                 s.cwd = path;
                 s.fingerprint = Some(fingerprint);
                 s.phase = RemoteFsPhase::Ready;
             }
             Err(e) => {
-                st.lock().unwrap().phase = RemoteFsPhase::Failed(format!("列目录失败: {e}"));
+                st.lock().unwrap_or_else(|e| e.into_inner()).phase = RemoteFsPhase::Failed(format!("列目录失败: {e}"));
             }
         }
     });
@@ -351,7 +351,7 @@ fn ftp_secret(secret: SshAuthSecret) -> FtpAuthSecret {
 /// 进入子目录（或返回上级）。
 pub fn navigate(state: &Arc<Mutex<RemoteFsState>>, name: &str) {
     let (fingerprint, next) = {
-        let s = state.lock().unwrap();
+        let s = state.lock().unwrap_or_else(|e| e.into_inner());
         let fp = s.fingerprint.clone();
         let next = if name == ".." {
             let mut p = s.cwd.clone();
@@ -377,7 +377,7 @@ pub fn navigate(state: &Arc<Mutex<RemoteFsState>>, name: &str) {
 // ---------------------------------------------------------------------------
 
 fn update_entry(state: &Arc<Mutex<RemoteFsState>>, job_id: &str, f: impl FnOnce(&mut TransferEntry)) {
-    let mut s = state.lock().unwrap();
+    let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(e) = s.transfers.iter_mut().find(|t| t.job_id == job_id) {
         f(e);
     }
@@ -391,7 +391,7 @@ pub fn start_transfer(
     remote_path: String,
 ) {
     let (config, secret, fingerprint) = {
-        let s = state.lock().unwrap();
+        let s = state.lock().unwrap_or_else(|e| e.into_inner());
         (s.config(), s.secret(), s.fingerprint.clone())
     };
     let (Some(secret), Some(fp)) = (secret, fingerprint) else { return };
@@ -411,7 +411,7 @@ pub fn start_transfer(
         .unwrap_or_else(|| "file".to_owned());
     let bytes_total = std::fs::metadata(&local_path).map(|m| m.len()).unwrap_or(0);
     {
-        let mut s = state.lock().unwrap();
+        let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
         s.transfers.push(TransferEntry {
             job_id: job_id.clone(),
             name: name.clone(),
@@ -436,7 +436,7 @@ pub fn start_transfer(
             bytes_total,
         };
         let result = {
-            let protocol = st.lock().unwrap().protocol;
+            let protocol = st.lock().unwrap_or_else(|e| e.into_inner()).protocol;
             match protocol {
                 FsProtocol::Sftp => CoreHandle::new().run_scp_transfer(config, secret, &fp, job),
                 FsProtocol::Ftp => {
@@ -487,7 +487,7 @@ pub fn poll_transfers(state: &Arc<Mutex<RemoteFsState>>) {
     for job_id in running {
         if let Ok(events) = handle.take_scp_progress(&job_id) {
             if let Some(last) = events.last() {
-                let mut s = state.lock().unwrap();
+                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(e) = s.transfers.iter_mut().find(|t| t.job_id == job_id) {
                     e.bytes_done = last.bytes_done;
                     if last.bytes_total > 0 {

@@ -102,12 +102,12 @@ pub fn begin_connect(state: &Arc<Mutex<TunnelPaneState>>) {
     let handle = CoreHandle::new();
     let st = state.clone();
     std::thread::spawn(move || {
-        let config = { st.lock().unwrap().config() };
-        st.lock().unwrap().phase = TunnelPhase::Busy("探测主机密钥…".to_owned());
+        let config = { st.lock().unwrap_or_else(|e| e.into_inner()).config() };
+        st.lock().unwrap_or_else(|e| e.into_inner()).phase = TunnelPhase::Busy("探测主机密钥…".to_owned());
         let observed = match handle.probe_host_key(config.clone()) {
             Ok(k) => k,
             Err(e) => {
-                st.lock().unwrap().phase = TunnelPhase::Failed(format!("探测主机密钥失败: {e}"));
+                st.lock().unwrap_or_else(|e| e.into_inner()).phase = TunnelPhase::Failed(format!("探测主机密钥失败: {e}"));
                 return;
             }
         };
@@ -120,21 +120,21 @@ pub fn begin_connect(state: &Arc<Mutex<TunnelPaneState>>) {
         ) {
             Ok(_) => finish_connect(&st, fingerprint),
             Err(SshRuntimeError::UnknownHostKey) => {
-                st.lock().unwrap().phase = TunnelPhase::ConfirmHostKey {
+                st.lock().unwrap_or_else(|e| e.into_inner()).phase = TunnelPhase::ConfirmHostKey {
                     fingerprint,
                     raw_key: observed.raw_key,
                     previous: None,
                 };
             }
             Err(SshRuntimeError::HostKeyChanged { previous_fingerprint_sha256 }) => {
-                st.lock().unwrap().phase = TunnelPhase::ConfirmHostKey {
+                st.lock().unwrap_or_else(|e| e.into_inner()).phase = TunnelPhase::ConfirmHostKey {
                     fingerprint,
                     raw_key: observed.raw_key,
                     previous: Some(previous_fingerprint_sha256),
                 };
             }
             Err(e) => {
-                st.lock().unwrap().phase = TunnelPhase::Failed(format!("主机密钥校验失败: {e}"));
+                st.lock().unwrap_or_else(|e| e.into_inner()).phase = TunnelPhase::Failed(format!("主机密钥校验失败: {e}"));
             }
         }
     });
@@ -146,7 +146,7 @@ pub fn confirm_host_key(state: &Arc<Mutex<TunnelPaneState>>) {
     let st = state.clone();
     std::thread::spawn(move || {
         let (host, port, fingerprint, raw_key, previous) = {
-            let s = st.lock().unwrap();
+            let s = st.lock().unwrap_or_else(|e| e.into_inner());
             match &s.phase {
                 TunnelPhase::ConfirmHostKey {
                     fingerprint,
@@ -171,7 +171,7 @@ pub fn confirm_host_key(state: &Arc<Mutex<TunnelPaneState>>) {
         match handle.apply_host_key_decision(&host, port, raw_key, decision) {
             Ok(_) => finish_connect(&st, fingerprint),
             Err(e) => {
-                st.lock().unwrap().phase = TunnelPhase::Failed(format!("主机密钥确认失败: {e}"));
+                st.lock().unwrap_or_else(|e| e.into_inner()).phase = TunnelPhase::Failed(format!("主机密钥确认失败: {e}"));
             }
         }
     });
@@ -179,7 +179,7 @@ pub fn confirm_host_key(state: &Arc<Mutex<TunnelPaneState>>) {
 
 fn finish_connect(state: &Arc<Mutex<TunnelPaneState>>, fingerprint: String) {
     {
-        let mut s = state.lock().unwrap();
+        let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
         s.fingerprint = Some(fingerprint);
         s.phase = TunnelPhase::Ready;
     }
@@ -199,7 +199,7 @@ pub fn refresh_profiles(state: &Arc<Mutex<TunnelPaneState>>) {
                     statuses.insert(id.clone(), status.state);
                 }
             }
-            let mut s = st.lock().unwrap();
+            let mut s = st.lock().unwrap_or_else(|e| e.into_inner());
             s.profiles = profiles;
             s.statuses = statuses;
         }
@@ -209,7 +209,7 @@ pub fn refresh_profiles(state: &Arc<Mutex<TunnelPaneState>>) {
 /// 新建隧道配置。
 pub fn create_profile(state: &Arc<Mutex<TunnelPaneState>>) {
     let (session_id, kind, local_port, remote_host, remote_port) = {
-        let s = state.lock().unwrap();
+        let s = state.lock().unwrap_or_else(|e| e.into_inner());
         (
             None,
             s.draft_kind.clone(),
@@ -241,7 +241,7 @@ pub fn create_profile(state: &Arc<Mutex<TunnelPaneState>>) {
 /// 启动隧道（后台，使用已确认的 SSH 上下文）。
 pub fn start_profile(state: &Arc<Mutex<TunnelPaneState>>, profile_id: &str) {
     let (config, secret, fingerprint, profile) = {
-        let s = state.lock().unwrap();
+        let s = state.lock().unwrap_or_else(|e| e.into_inner());
         let profile = s.profiles.iter().find(|p| p.id == profile_id).cloned();
         (s.config(), s.secret(), s.fingerprint.clone(), profile)
     };
@@ -254,7 +254,7 @@ pub fn start_profile(state: &Arc<Mutex<TunnelPaneState>>, profile_id: &str) {
         let handle = CoreHandle::new();
         match handle.start_tunnel(config, secret, &fp, profile) {
             Ok(status) => {
-                st.lock().unwrap().statuses.insert(profile_id.clone(), status.state);
+                st.lock().unwrap_or_else(|e| e.into_inner()).statuses.insert(profile_id.clone(), status.state);
             }
             Err(e) => log::warn!("启动隧道失败: {e}"),
         }

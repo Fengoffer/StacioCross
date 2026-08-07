@@ -929,7 +929,7 @@ fn render_pane(
     }
     let ppi = ui.ctx().pixels_per_point();
     let (cw, ch) = {
-        let r = renderer.lock().unwrap();
+        let r = renderer.lock().unwrap_or_else(|e| e.into_inner());
         let m = r.metrics();
         (m.cell_width, m.cell_height)
     };
@@ -937,7 +937,7 @@ fn render_pane(
     let rows = (rect.height() * ppi / ch) as usize;
     let model = pane.model.clone();
     {
-        let mut m = model.lock().unwrap();
+        let mut m = model.lock().unwrap_or_else(|e| e.into_inner());
         let cur = m.size();
         if cur.columns != cols || cur.rows != rows {
             m.resize(stacio_term::model::TerminalSize::new(cols.max(1), rows.max(1)));
@@ -951,11 +951,11 @@ fn render_pane(
     if let Some(state) = &pane.ssh {
         let state = state.clone();
         let running = matches!(
-            state.lock().unwrap().phase,
+            state.lock().unwrap_or_else(|e| e.into_inner()).phase,
             crate::ssh_tab::SshPhase::Running { .. }
         );
         if running {
-            let rid = match &state.lock().unwrap().phase {
+            let rid = match &state.lock().unwrap_or_else(|e| e.into_inner()).phase {
                 crate::ssh_tab::SshPhase::Running { runtime_id } => runtime_id.clone(),
                 _ => unreachable!(),
             };
@@ -967,7 +967,7 @@ fn render_pane(
             )));
             capture_terminal_input(ui, &state, &rid, term_rect);
             // 多行粘贴确认对话框（功能清单 2.18）。
-            let paste = state.lock().unwrap().pending_paste.clone();
+            let paste = state.lock().unwrap_or_else(|e| e.into_inner()).pending_paste.clone();
             if let Some(clip) = paste {
                 let mut ok = false;
                 let mut cancel = false;
@@ -994,14 +994,14 @@ fn render_pane(
                     });
                 if ok {
                     let _ = stacio_core_bridge::CoreHandle::new().write_input(&rid, clip.into_bytes());
-                    state.lock().unwrap().pending_paste = None;
+                    state.lock().unwrap_or_else(|e| e.into_inner()).pending_paste = None;
                 }
                 if cancel {
-                    state.lock().unwrap().pending_paste = None;
+                    state.lock().unwrap_or_else(|e| e.into_inner()).pending_paste = None;
                 }
             }
         } else {
-            let mut st = state.lock().unwrap();
+            let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
             render_ssh_phase_ui(ui, &mut st, &state, &model);
         }
         return;
@@ -1185,12 +1185,12 @@ fn capture_terminal_input(
 
     // 多行粘贴待确认（对话框在 render_pane Running 分支弹）。
     if let Some(clip) = pending_multi {
-        state.lock().unwrap().pending_paste = Some(clip);
+        state.lock().unwrap_or_else(|e| e.into_inner()).pending_paste = Some(clip);
     }
 
     if !bytes.is_empty() {
         // 命令历史跟踪（功能清单 2.20）。
-        state.lock().unwrap().feed_input(&bytes);
+        state.lock().unwrap_or_else(|e| e.into_inner()).feed_input(&bytes);
         let _ = stacio_core_bridge::CoreHandle::new().write_input(runtime_id, bytes);
     }
 }
@@ -1259,7 +1259,7 @@ fn show_tunnel_pane(ui: &mut egui::Ui, wb: &mut Workbench, license: &stacio_lice
     let mut stop_id: Option<String> = None;
 
     {
-        let mut s = state.lock().unwrap();
+        let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
         match &s.phase {
             TunnelPhase::Auth => {
                 if ui.button("连接 SSH 上下文").clicked() {
@@ -1391,10 +1391,10 @@ fn show_tunnel_pane(ui: &mut egui::Ui, wb: &mut Workbench, license: &stacio_lice
         confirm_host_key(&state);
     }
     if cancel_confirm {
-        state.lock().unwrap().phase = TunnelPhase::Auth;
+        state.lock().unwrap_or_else(|e| e.into_inner()).phase = TunnelPhase::Auth;
     }
     if back {
-        state.lock().unwrap().phase = TunnelPhase::Auth;
+        state.lock().unwrap_or_else(|e| e.into_inner()).phase = TunnelPhase::Auth;
     }
     if create {
         create_profile(&state);
@@ -1414,7 +1414,7 @@ fn show_command_history_pane(ui: &mut egui::Ui, wb: &Workbench) {
     ui.add_space(4.0);
     let (history, current_line) = match wb.tabs.get(wb.active_tab).map(|t| &t.kind) {
         Some(TabKind::Ssh(state)) => {
-            let s = state.lock().unwrap();
+            let s = state.lock().unwrap_or_else(|e| e.into_inner());
             (s.command_history.clone(), s.current_line.clone())
         }
         _ => (Vec::new(), String::new()),
@@ -1460,17 +1460,17 @@ fn show_macro_pane(ui: &mut egui::Ui, wb: &mut Workbench) {
         _ => None,
     };
     if let Some(state) = &active_ssh {
-        let recording = state.lock().unwrap().recording;
+        let recording = state.lock().unwrap_or_else(|e| e.into_inner()).recording;
         if recording {
             ui.colored_label(egui::Color32::from_rgb(230, 80, 80), "● 录制中…");
             if ui.button("■ 停止并保存").clicked() {
-                let steps = state.lock().unwrap().toggle_recording();
+                let steps = state.lock().unwrap_or_else(|e| e.into_inner()).toggle_recording();
                 if !steps.is_empty() {
                     wb.macro_save_name = Some(String::new());
                 }
             }
         } else if ui.button("⏺ 开始录制").clicked() {
-            state.lock().unwrap().toggle_recording();
+            state.lock().unwrap_or_else(|e| e.into_inner()).toggle_recording();
         }
         ui.add_space(4.0);
     }
@@ -1532,7 +1532,7 @@ fn show_macro_pane(ui: &mut egui::Ui, wb: &mut Workbench) {
     }
     if let Some(name) = save_name {
         if let Some(state) = &active_ssh {
-            let steps = state.lock().unwrap().record_steps.clone();
+            let steps = state.lock().unwrap_or_else(|e| e.into_inner()).record_steps.clone();
             if !steps.is_empty() {
                 let _ = stacio_core_bridge::CoreHandle::new().create_macro(&name, steps);
             }
@@ -1548,7 +1548,7 @@ fn play_macro_async(
     let Some(state) = state else { return };
     let steps = m.steps.clone();
     std::thread::spawn(move || {
-        let runtime_id = match &state.lock().unwrap().phase {
+        let runtime_id = match &state.lock().unwrap_or_else(|e| e.into_inner()).phase {
             crate::ssh_tab::SshPhase::Running { runtime_id } => runtime_id.clone(),
             _ => return,
         };
@@ -1596,7 +1596,7 @@ fn show_files_pane(ui: &mut egui::Ui, wb: &mut Workbench) {
     ui.heading("传输");
     // 冲突策略（功能清单 3.6）。
     {
-        let mut s = wb.remote_fs.lock().unwrap();
+        let mut s = wb.remote_fs.lock().unwrap_or_else(|e| e.into_inner());
         ui.horizontal(|ui| {
             ui.label("冲突策略");
             egui::ComboBox::from_id_salt("conflict-policy")
@@ -1616,7 +1616,7 @@ fn show_files_pane(ui: &mut egui::Ui, wb: &mut Workbench) {
     }
     let mut cancel: Option<String> = None;
     {
-        let s = wb.remote_fs.lock().unwrap();
+        let s = wb.remote_fs.lock().unwrap_or_else(|e| e.into_inner());
         for t in &s.transfers {
             ui.horizontal(|ui| {
                 ui.label(&t.direction);
@@ -1692,11 +1692,11 @@ fn show_local_pane(ui: &mut egui::Ui, wb: &mut Workbench) -> Option<(String, Str
                 let entry_name = e.name.clone();
                 resp.context_menu(|ui| {
                     if ui.button("上传到远程…").clicked() {
-                        let remote_ready = wb.remote_fs.lock().unwrap().fingerprint.is_some();
+                        let remote_ready = wb.remote_fs.lock().unwrap_or_else(|e| e.into_inner()).fingerprint.is_some();
                         if remote_ready {
                             let local = wb.local_browser.cwd.join(&entry_name);
                             let remote = {
-                                let s = wb.remote_fs.lock().unwrap();
+                                let s = wb.remote_fs.lock().unwrap_or_else(|e| e.into_inner());
                                 let sep = if s.cwd.ends_with('/') { "" } else { "/" };
                                 format!("{}{}{}", s.cwd, sep, entry_name)
                             };
@@ -1733,7 +1733,7 @@ fn show_remote_pane(ui: &mut egui::Ui, state: &Arc<Mutex<crate::files_pane::Remo
     let mut download: Option<String> = None;
 
     {
-        let mut st = state.lock().unwrap();
+        let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
         match &st.phase {
             RemoteFsPhase::Auth => {
                 ui.horizontal(|ui| {
@@ -1851,15 +1851,15 @@ fn show_remote_pane(ui: &mut egui::Ui, state: &Arc<Mutex<crate::files_pane::Remo
         confirm_host_key(state);
     }
     if cancel_confirm {
-        state.lock().unwrap().phase = RemoteFsPhase::Auth;
+        state.lock().unwrap_or_else(|e| e.into_inner()).phase = RemoteFsPhase::Auth;
     }
     if let Some(n) = nav {
-        if state.lock().unwrap().fingerprint.is_some() {
+        if state.lock().unwrap_or_else(|e| e.into_inner()).fingerprint.is_some() {
             navigate(state, &n);
         }
     }
     if back {
-        state.lock().unwrap().phase = RemoteFsPhase::Auth;
+        state.lock().unwrap_or_else(|e| e.into_inner()).phase = RemoteFsPhase::Auth;
     }
     download
 }
@@ -1879,7 +1879,7 @@ fn show_logs_pane(ui: &mut egui::Ui, wb: &mut Workbench) {
             ui.label(format!("宏：{}", macros.len()));
         }
         {
-            let s = wb.remote_fs.lock().unwrap();
+            let s = wb.remote_fs.lock().unwrap_or_else(|e| e.into_inner());
             ui.label(format!("传输：{}（{} 进行中）", s.transfers.len(), s.transfers.iter().filter(|t| t.status == "running").count()));
         }
         // 授权状态。

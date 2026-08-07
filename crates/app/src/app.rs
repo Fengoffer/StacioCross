@@ -52,14 +52,14 @@ fn metrics_put_result(result: Result<stacio_core_bridge::DeviceMetricsSnapshot, 
     static RESULT: std::sync::OnceLock<
         std::sync::Mutex<Option<Result<stacio_core_bridge::DeviceMetricsSnapshot, String>>>,
     > = std::sync::OnceLock::new();
-    *RESULT.get_or_init(|| std::sync::Mutex::new(None)).lock().unwrap() = Some(result);
+    *RESULT.get_or_init(|| std::sync::Mutex::new(None)).lock().unwrap_or_else(|e| e.into_inner()) = Some(result);
 }
 
 fn metrics_take_result() -> Option<Result<stacio_core_bridge::DeviceMetricsSnapshot, String>> {
     static RESULT: std::sync::OnceLock<
         std::sync::Mutex<Option<Result<stacio_core_bridge::DeviceMetricsSnapshot, String>>>,
     > = std::sync::OnceLock::new();
-    RESULT.get_or_init(|| std::sync::Mutex::new(None)).lock().unwrap().take()
+    RESULT.get_or_init(|| std::sync::Mutex::new(None)).lock().unwrap_or_else(|e| e.into_inner()).take()
 }
 
 /// 人类可读字节数。
@@ -460,7 +460,7 @@ impl App {
                     // 保存终端输出（功能清单 2.24）。
                     if ui.small_button("💾 保存输出").clicked() {
                         if let Some(model) = wb.active_model() {
-                            let text = model.lock().unwrap().dump_visible_text();
+                            let text = model.lock().unwrap_or_else(|e| e.into_inner()).dump_visible_text();
                             let adapter = stacio_platform::default_adapter();
                             if let Some(path) = adapter.save_file("保存终端输出为", "terminal-output.txt") {
                                 if let Err(e) = std::fs::write(&path, text.as_bytes()) {
@@ -529,7 +529,7 @@ impl App {
         let matches = if self.search_query.is_empty() {
             Vec::new()
         } else if let Some(model) = wb.active_model() {
-            model.lock().unwrap().find_matches(&self.search_query)
+            model.lock().unwrap_or_else(|e| e.into_inner()).find_matches(&self.search_query)
         } else {
             Vec::new()
         };
@@ -541,7 +541,7 @@ impl App {
             r.set_search_matches(matches.clone());
             // 语义高亮（功能清单 2.8）。
             if let Some(model) = wb.active_model() {
-                let marks = model.lock().unwrap().semantic_marks();
+                let marks = model.lock().unwrap_or_else(|e| e.into_inner()).semantic_marks();
                 r.set_semantic_marks(marks);
             }
         }
@@ -554,7 +554,7 @@ impl App {
             };
             if let Some(model) = wb.active_model() {
                 let m = matches[self.search_idx];
-                model.lock().unwrap().scroll_to_match(&m);
+                model.lock().unwrap_or_else(|e| e.into_inner()).scroll_to_match(&m);
             }
         }
 
@@ -658,13 +658,13 @@ impl App {
                     } else if ui.button("断开").clicked() {
                         disconnect = true;
                     }
-                    let status = self.rdp.shared.status.lock().unwrap().clone();
+                    let status = self.rdp.shared.status.lock().unwrap_or_else(|e| e.into_inner()).clone();
                     ui.weak(status);
                 });
                 ui.separator();
                 // 帧显示。
                 let (w, h, bgra) = {
-                    let f = self.rdp.shared.frame.lock().unwrap();
+                    let f = self.rdp.shared.frame.lock().unwrap_or_else(|e| e.into_inner());
                     match &*f {
                         Some((w, h, data)) => (*w, *h, data.clone()),
                         None => (0, 0, Vec::new()),
@@ -719,7 +719,7 @@ impl App {
             self.rdp.close();
             self.rdp.session = None;
             self.rdp.texture = None;
-            *self.rdp.shared.status.lock().unwrap() = "未连接".to_owned();
+            *self.rdp.shared.status.lock().unwrap_or_else(|e| e.into_inner()) = "未连接".to_owned();
         }
     }
 
@@ -863,7 +863,7 @@ impl App {
                 let mut targets: Vec<stacio_core_bridge::MultiExecTarget> = Vec::new();
                 for tab in &wb.tabs {
                     let TabKind::Ssh(state) = &tab.kind else { continue };
-                    let rid = match &state.lock().unwrap().phase {
+                    let rid = match &state.lock().unwrap_or_else(|e| e.into_inner()).phase {
                         crate::ssh_tab::SshPhase::Running { runtime_id } => runtime_id.clone(),
                         _ => continue,
                     };
@@ -916,7 +916,7 @@ impl App {
                 .iter()
                 .filter_map(|t| match &t.kind {
                     TabKind::Ssh(state) => {
-                        let s = state.lock().unwrap();
+                        let s = state.lock().unwrap_or_else(|e| e.into_inner());
                         match &s.phase {
                             crate::ssh_tab::SshPhase::Running { runtime_id } => {
                                 let rid = runtime_id.clone();
@@ -1218,7 +1218,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 if let Some(renderer) = self.terminal_renderer.as_mut() {
-                    let mut r = renderer.lock().unwrap();
+                    let mut r = renderer.lock().unwrap_or_else(|e| e.into_inner());
                     r.set_font_size(13.0, scale_factor as f32);
                 }
                 window.request_redraw();
