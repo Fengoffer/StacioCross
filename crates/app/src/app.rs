@@ -1177,8 +1177,6 @@ impl App {
         surface_texture.present();
 
         self.track_frame();
-        // 持续重绘：光标闪烁 / 压测滚动。
-        ctx.request_repaint();
     }
 }
 
@@ -1234,6 +1232,11 @@ impl ApplicationHandler for App {
             return;
         }
         if let Some(window) = &self.window {
+            // 空闲节流：WaitUntil 33ms（~30fps）兜底重绘，事件到来会立即唤醒，
+            // 避免 Poll 模式满 CPU 空转。
+            event_loop.set_control_flow(ControlFlow::WaitUntil(
+                std::time::Instant::now() + std::time::Duration::from_millis(33),
+            ));
             window.request_redraw();
         }
     }
