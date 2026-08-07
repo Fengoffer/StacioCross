@@ -1059,7 +1059,7 @@ fn render_ssh_phase_ui(
                     });
                     ui.checkbox(&mut st.use_agent, "使用 SSH Agent");
                     ui.horizontal(|ui| {
-                        ui.label("Keepalive");
+                        ui.label("保活间隔");
                         ui.add(egui::DragValue::new(&mut st.keepalive_seconds).range(0..=600));
                         ui.weak("秒");
                     });
