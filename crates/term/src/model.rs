@@ -842,4 +842,30 @@ mod tests {
         // 无命中。
         assert!(m.find_matches("zzz").is_empty());
     }
+
+    #[test]
+    fn semantic_marks_flags_error_and_warn_lines() {
+        let mut m = TerminalModel::new(TerminalSize::new(80, 24));
+        m.process_bytes(b"[OK] fine\r\n[ERROR] boom\r\n[WARN] slow\r\n");
+        let marks = m.semantic_marks();
+        assert_eq!(
+            marks.values().filter(|&&v| v == 1).count(),
+            1,
+            "一条 ERROR 行：{marks:?}"
+        );
+        assert_eq!(
+            marks.values().filter(|&&v| v == 2).count(),
+            1,
+            "一条 WARN 行：{marks:?}"
+        );
+    }
+
+    #[test]
+    fn dump_visible_text_joins_lines() {
+        let mut m = TerminalModel::new(TerminalSize::new(40, 10));
+        m.process_bytes(b"alpha\r\nbeta\r\n");
+        let text = m.dump_visible_text();
+        assert!(text.contains("alpha"), "文本：{text:?}");
+        assert!(text.contains("beta"), "文本：{text:?}");
+    }
 }
