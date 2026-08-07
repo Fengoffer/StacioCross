@@ -210,20 +210,53 @@ pub fn license_path() -> PathBuf {
     }
 }
 
-/// 加载授权快照；无文件或无有效签名返回 Unlicensed。
+/// 授权 token 的安全存储（平台 CredentialStore，规范 §2）。
+/// Linux PoC 返回 Unsupported 时回退到本地文件。
+mod secure_token {
+    use super::PathBuf;
+    const SERVICE: &str = "Stacio";
+    const ACCOUNT: &str = "license-token";
+
+    pub fn store(token: &str) -> Result<(), String> {
+        let adapter = stacio_platform::default_adapter();
+        match adapter.set(SERVICE, ACCOUNT, token) {
+            Ok(()) => Ok(()),
+            Err(_) => {
+                // 回退：本地文件（PoC）。
+                std::fs::write(secure_token_path(), token).map_err(|e| e.to_string())
+            }
+        }
+    }
+
+    pub fn load() -> Option<String> {
+        let adapter = stacio_platform::default_adapter();
+        match adapter.get(SERVICE, ACCOUNT) {
+            Ok(Some(t)) => Some(t),
+            _ => std::fs::read_to_string(secure_token_path()).ok(),
+        }
+    }
+
+    fn secure_token_path() -> PathBuf {
+        super::license_path().with_file_name("license-token.bin")
+    }
+
+    pub fn clear() {
+        let adapter = stacio_platform::default_adapter();
+        let _ = adapter.delete(SERVICE, ACCOUNT);
+        let _ = std::fs::remove_file(secure_token_path());
+    }
+}
+
+/// 加载授权快照；无有效签名返回 Unlicensed。
 pub fn load() -> LicenseSnapshot {
-    let path = license_path();
-    let Ok(data) = std::fs::read_to_string(&path) else {
+    let Some(token) = secure_token::load() else {
         return LicenseSnapshot::default();
     };
-    let Ok(snap) = serde_json::from_str::<LicenseSnapshot>(&data) else {
-        return LicenseSnapshot::default();
-    };
-    if snap.token.is_empty() {
+    if token.is_empty() {
         return LicenseSnapshot::default();
     }
-    // 重新验签（防篡改文件）。
-    match verify_signed_token(&snap.token) {
+    // 重新验签（防篡改）。
+    match verify_signed_token(&token) {
         Ok(parsed) => parsed,
         Err(e) => {
             log::warn!("授权文件验签失败: {e}");
@@ -232,14 +265,20 @@ pub fn load() -> LicenseSnapshot {
     }
 }
 
-/// 保存授权快照（写入签名 token + 展示字段）。
+/// 保存授权快照（token 入平台安全存储，展示字段入文件）。
 pub fn save(snap: &LicenseSnapshot) -> std::io::Result<()> {
     let path = license_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let data = serde_json::to_string_pretty(snap).expect("serialize snapshot");
-    std::fs::write(path, data)
+    let mut display = snap.clone();
+    display.token = String::new();
+    let data = serde_json::to_string_pretty(&display).expect("serialize snapshot");
+    std::fs::write(path, data)?;
+    if !snap.token.is_empty() {
+        let _ = secure_token::store(&snap.token);
+    }
+    Ok(())
 }
 
 /// 开发解锁：全部功能 + 永久有效期（仅 dev 构建）。
@@ -563,6 +602,7 @@ mod tests {
 
         // 清理（避免污染后续测试）。
         std::fs::remove_file(license_path()).ok();
+        secure_token::clear();
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -583,6 +623,7 @@ mod tests {
         let loaded = load();
         assert_eq!(loaded.status, LicenseStatus::Unlicensed);
         std::fs::remove_file(license_path()).ok();
+        secure_token::clear();
     }
 
     #[test]
