@@ -1071,7 +1071,7 @@ impl App {
     }
 
     fn redraw(&mut self) {
-        let window = self.window.clone().unwrap();
+        let Some(window) = self.window.clone() else { return };
         let ctx = self.egui_ctx.clone();
 
         // 1) 事件输入 → egui UI（终端回调在此注册）。
@@ -1091,7 +1091,7 @@ impl App {
         };
 
         // 2) GPU 帧：上传 egui 纹理增量（字体图集等），再更新缓冲（回调 prepare 在此运行）。
-        let gpu = self.gpu.as_mut().unwrap();
+        let Some(gpu) = self.gpu.as_mut() else { return };
         let textures_delta = &full_output.textures_delta;
         for (id, image_delta) in &textures_delta.set {
             gpu.egui_renderer
@@ -1199,8 +1199,8 @@ impl ApplicationHandler for App {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
-        let window = self.window.clone().unwrap();
-        let egui_state = self.egui_state.as_mut().unwrap();
+        let Some(window) = self.window.clone() else { return };
+        let Some(egui_state) = self.egui_state.as_mut() else { return };
         let egui_response = egui_state.on_window_event(&window, &event);
         if egui_response.repaint {
             window.request_redraw();

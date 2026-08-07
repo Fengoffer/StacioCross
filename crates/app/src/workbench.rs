@@ -653,7 +653,7 @@ fn build_folder_tree(snap: &stacio_core_bridge::SessionSidebarSnapshot) -> Vec<F
 
     let mut roots: Vec<FolderNode> = Vec::new();
     for f in &snap.folders {
-        let node = by_id.remove(f.id.as_str()).expect("folder exists");
+        let Some(node) = by_id.remove(f.id.as_str()) else { continue };
         match f.parent_id.as_deref() {
             Some(parent) => {
                 if let Some(p) = by_id.get_mut(parent) {
@@ -955,9 +955,10 @@ fn render_pane(
             crate::ssh_tab::SshPhase::Running { .. }
         );
         if running {
+            // 竞态防护：两次取锁之间 phase 可能已变化（如刚断开），安全回退。
             let rid = match &state.lock().unwrap_or_else(|e| e.into_inner()).phase {
                 crate::ssh_tab::SshPhase::Running { runtime_id } => runtime_id.clone(),
-                _ => unreachable!(),
+                _ => return,
             };
             crate::ssh_tab::report_resize(&state, cols as u32, rows as u32);
             let callback = TerminalCallback { model: model.clone(), renderer: renderer.clone() };

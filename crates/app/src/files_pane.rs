@@ -478,7 +478,7 @@ pub fn poll_transfers(state: &Arc<Mutex<RemoteFsState>>) {
     let handle = CoreHandle::new();
     let running: Vec<String> = state
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .transfers
         .iter()
         .filter(|t| t.status == "running")
